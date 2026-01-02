@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openshift-dashboard-config
+  labels:
+    app: openshift-dashboard
+data:
+  kubernetes-api-server: "https://kubernetes.default.svc"
+  namespace: "default"
+  service-account-namespace: "default"
+

@@ -1,0 +1,27 @@
+{{- if .Values.frontend.enabled }}
+{{- if .Values.frontend.files }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "openshift-dashboard.fullname" . }}-frontend-files
+  labels:
+    {{- include "openshift-dashboard.labels" . | nindent 4 }}
+    component: frontend
+data:
+  {{- toYaml .Values.frontend.files | nindent 2 }}
+{{- else }}
+# Note: To use this ConfigMap, you need to either:
+# 1. Set frontend.files in values.yaml with the file contents (index.html, styles.css, app.js)
+# 2. Create the ConfigMap separately and reference it
+# 3. Copy the content from the original frontend-files-configmap.yaml into values.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "openshift-dashboard.fullname" . }}-frontend-files
+  labels:
+    {{- include "openshift-dashboard.labels" . | nindent 4 }}
+    component: frontend
+data: {}
+{{- end }}
+{{- end }}
+

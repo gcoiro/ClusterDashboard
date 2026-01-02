@@ -1,0 +1,567 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openshift-dashboard-frontend-files
+  labels:
+    app: openshift-dashboard
+    component: frontend
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>OpenShift Deployment Dashboard</title>
+        <link rel="stylesheet" href="styles.css">
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <h1>OpenShift Deployment Dashboard</h1>
+            </header>
+
+            <div class="controls">
+                <div class="namespace-filter">
+                    <label for="namespace-select">Filter by Namespace:</label>
+                    <select id="namespace-select">
+                        <option value="all">All Namespaces</option>
+                    </select>
+                    <button id="refresh-btn" class="btn btn-primary">Refresh</button>
+                </div>
+            </div>
+
+            <div id="loading" class="loading">Loading deployments...</div>
+            <div id="error" class="error" style="display: none;"></div>
+
+            <div id="deployments-container" class="deployments-grid"></div>
+        </div>
+
+        <script src="app.js"></script>
+    </body>
+    </html>
+  styles.css: |
+    * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+    }
+
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 20px;
+        color: #333;
+    }
+
+    .container {
+        max-width: 1400px;
+        margin: 0 auto;
+    }
+
+    header {
+        text-align: center;
+        margin-bottom: 30px;
+        color: white;
+    }
+
+    header h1 {
+        font-size: 2.5em;
+        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+    }
+
+    .controls {
+        background: white;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        margin-bottom: 30px;
+    }
+
+    .namespace-filter {
+        display: flex;
+        align-items: center;
+        gap: 15px;
+        flex-wrap: wrap;
+    }
+
+    .namespace-filter label {
+        font-weight: 600;
+        color: #555;
+    }
+
+    .namespace-filter select {
+        padding: 10px 15px;
+        border: 2px solid #ddd;
+        border-radius: 5px;
+        font-size: 16px;
+        min-width: 200px;
+        background: white;
+        cursor: pointer;
+    }
+
+    .namespace-filter select:focus {
+        outline: none;
+        border-color: #667eea;
+    }
+
+    .btn {
+        padding: 10px 20px;
+        border: none;
+        border-radius: 5px;
+        font-size: 16px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s ease;
+    }
+
+    .btn-primary {
+        background: #667eea;
+        color: white;
+    }
+
+    .btn-primary:hover {
+        background: #5568d3;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    }
+
+    .loading, .error {
+        text-align: center;
+        padding: 40px;
+        background: white;
+        border-radius: 10px;
+        margin-bottom: 20px;
+        font-size: 18px;
+    }
+
+    .error {
+        color: #d32f2f;
+        background: #ffebee;
+        border: 2px solid #d32f2f;
+    }
+
+    .deployments-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+        gap: 20px;
+    }
+
+    .deployment-card {
+        background: white;
+        border-radius: 10px;
+        padding: 25px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+
+    .deployment-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+    }
+
+    .deployment-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 15px;
+        padding-bottom: 15px;
+        border-bottom: 2px solid #f0f0f0;
+    }
+
+    .deployment-name {
+        font-size: 1.4em;
+        font-weight: 700;
+        color: #333;
+    }
+
+    .deployment-namespace {
+        font-size: 0.9em;
+        color: #666;
+        background: #f5f5f5;
+        padding: 5px 10px;
+        border-radius: 5px;
+    }
+
+    .status-badge {
+        display: inline-block;
+        padding: 6px 12px;
+        border-radius: 20px;
+        font-size: 0.85em;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+
+    .status-ready {
+        background: #4caf50;
+        color: white;
+    }
+
+    .status-not-ready {
+        background: #ff9800;
+        color: white;
+    }
+
+    .deployment-info {
+        margin: 15px 0;
+    }
+
+    .info-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px solid #f0f0f0;
+    }
+
+    .info-row:last-child {
+        border-bottom: none;
+    }
+
+    .info-label {
+        font-weight: 600;
+        color: #666;
+    }
+
+    .info-value {
+        color: #333;
+        font-weight: 500;
+    }
+
+    .deployment-actions {
+        margin-top: 20px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    .btn-action {
+        flex: 1;
+        min-width: 100px;
+        padding: 10px;
+        border: none;
+        border-radius: 5px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s ease;
+    }
+
+    .btn-restart {
+        background: #2196f3;
+        color: white;
+    }
+
+    .btn-restart:hover {
+        background: #1976d2;
+        transform: translateY(-2px);
+    }
+
+    .btn-scale-up {
+        background: #4caf50;
+        color: white;
+    }
+
+    .btn-scale-up:hover {
+        background: #388e3c;
+        transform: translateY(-2px);
+    }
+
+    .btn-scale-down {
+        background: #ff9800;
+        color: white;
+    }
+
+    .btn-scale-down:hover {
+        background: #f57c00;
+        transform: translateY(-2px);
+    }
+
+    .scale-input-group {
+        display: flex;
+        gap: 5px;
+        align-items: center;
+        margin-top: 10px;
+    }
+
+    .scale-input {
+        flex: 1;
+        padding: 8px;
+        border: 2px solid #ddd;
+        border-radius: 5px;
+        font-size: 14px;
+    }
+
+    .scale-input:focus {
+        outline: none;
+        border-color: #667eea;
+    }
+
+    .btn-scale-apply {
+        background: #667eea;
+        color: white;
+        padding: 8px 15px;
+    }
+
+    .btn-scale-apply:hover {
+        background: #5568d3;
+    }
+
+    @media (max-width: 768px) {
+        .deployments-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .namespace-filter {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        .namespace-filter select {
+            width: 100%;
+        }
+    }
+  app.js: |
+    const API_BASE_URL = '/api';
+
+    // DOM elements
+    const namespaceSelect = document.getElementById('namespace-select');
+    const refreshBtn = document.getElementById('refresh-btn');
+    const deploymentsContainer = document.getElementById('deployments-container');
+    const loadingDiv = document.getElementById('loading');
+    const errorDiv = document.getElementById('error');
+
+    // State
+    let currentNamespace = 'all';
+    let deployments = [];
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+        loadNamespaces();
+        loadDeployments();
+        
+        namespaceSelect.addEventListener('change', (e) => {
+            currentNamespace = e.target.value;
+            loadDeployments();
+        });
+        
+        refreshBtn.addEventListener('click', () => {
+            loadDeployments();
+        });
+    });
+
+    // Load namespaces
+    async function loadNamespaces() {
+        try {
+            const response = await fetch(`${API_BASE_URL}/deployments/namespaces`);
+            if (!response.ok) throw new Error('Failed to fetch namespaces');
+            
+            const namespaces = await response.json();
+            
+            // Clear existing options except "All Namespaces"
+            namespaceSelect.innerHTML = '<option value="all">All Namespaces</option>';
+            
+            // Add namespace options
+            namespaces.forEach(ns => {
+                const option = document.createElement('option');
+                option.value = ns.name;
+                option.textContent = ns.name;
+                namespaceSelect.appendChild(option);
+            });
+        } catch (error) {
+            console.error('Error loading namespaces:', error);
+        }
+    }
+
+    // Load deployments
+    async function loadDeployments() {
+        showLoading();
+        hideError();
+        
+        try {
+            const url = currentNamespace === 'all' 
+                ? `${API_BASE_URL}/deployments`
+                : `${API_BASE_URL}/deployments?namespace=${currentNamespace}`;
+            
+            const response = await fetch(url);
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            deployments = await response.json();
+            renderDeployments();
+            hideLoading();
+        } catch (error) {
+            console.error('Error loading deployments:', error);
+            showError(`Failed to load deployments: ${error.message}`);
+            hideLoading();
+        }
+    }
+
+    // Render deployments
+    function renderDeployments() {
+        if (deployments.length === 0) {
+            deploymentsContainer.innerHTML = '<div class="loading">No deployments found</div>';
+            return;
+        }
+        
+        deploymentsContainer.innerHTML = deployments.map(deployment => `
+            <div class="deployment-card">
+                <div class="deployment-header">
+                    <div>
+                        <div class="deployment-name">${escapeHtml(deployment.name)}</div>
+                        <div class="deployment-namespace">${escapeHtml(deployment.namespace)}</div>
+                    </div>
+                    <span class="status-badge ${deployment.isReady ? 'status-ready' : 'status-not-ready'}">
+                        ${deployment.isReady ? 'Ready' : 'Not Ready'}
+                    </span>
+                </div>
+                
+                <div class="deployment-info">
+                    <div class="info-row">
+                        <span class="info-label">Pods:</span>
+                        <span class="info-value">${deployment.readyReplicas} / ${deployment.replicas}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Available:</span>
+                        <span class="info-value">${deployment.availableReplicas}</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Unavailable:</span>
+                        <span class="info-value">${deployment.unavailableReplicas || 0}</span>
+                    </div>
+                </div>
+                
+                <div class="deployment-actions">
+                    <button class="btn-action btn-restart" onclick="restartDeployment('${deployment.namespace}', '${deployment.name}')">
+                        Restart
+                    </button>
+                    <button class="btn-action btn-scale-up" onclick="scaleDeployment('${deployment.namespace}', '${deployment.name}', ${deployment.replicas + 1})">
+                        Scale +1
+                    </button>
+                    <button class="btn-action btn-scale-down" onclick="scaleDeployment('${deployment.namespace}', '${deployment.name}', ${Math.max(0, deployment.replicas - 1)})">
+                        Scale -1
+                    </button>
+                </div>
+                
+                <div class="scale-input-group">
+                    <input 
+                        type="number" 
+                        class="scale-input" 
+                        id="scale-${deployment.namespace}-${deployment.name}" 
+                        value="${deployment.replicas}" 
+                        min="0"
+                        placeholder="Replicas"
+                    >
+                    <button 
+                        class="btn-action btn-scale-apply" 
+                        onclick="scaleDeploymentCustom('${deployment.namespace}', '${deployment.name}')"
+                    >
+                        Set Replicas
+                    </button>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    // Restart deployment
+    async function restartDeployment(namespace, name) {
+        if (!confirm(`Are you sure you want to restart deployment "${name}" in namespace "${namespace}"?`)) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`${API_BASE_URL}/deployments/${namespace}/${name}/restart`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+            
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || 'Failed to restart deployment');
+            }
+            
+            const result = await response.json();
+            alert(result.message || 'Deployment restarted successfully');
+            loadDeployments();
+        } catch (error) {
+            alert(`Error: ${error.message}`);
+            console.error('Error restarting deployment:', error);
+        }
+    }
+
+    // Scale deployment
+    async function scaleDeployment(namespace, name, replicas) {
+        if (replicas < 0) {
+            alert('Replicas cannot be negative');
+            return;
+        }
+        
+        if (!confirm(`Scale deployment "${name}" in namespace "${namespace}" to ${replicas} replicas?`)) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`${API_BASE_URL}/deployments/${namespace}/${name}/scale`, {
+                method: 'PATCH',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ replicas }),
+            });
+            
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || 'Failed to scale deployment');
+            }
+            
+            const result = await response.json();
+            alert(result.message || 'Deployment scaled successfully');
+            loadDeployments();
+        } catch (error) {
+            alert(`Error: ${error.message}`);
+            console.error('Error scaling deployment:', error);
+        }
+    }
+
+    // Scale deployment with custom value
+    async function scaleDeploymentCustom(namespace, name) {
+        const input = document.getElementById(`scale-${namespace}-${name}`);
+        const replicas = parseInt(input.value, 10);
+        
+        if (isNaN(replicas) || replicas < 0) {
+            alert('Please enter a valid number of replicas (>= 0)');
+            return;
+        }
+        
+        await scaleDeployment(namespace, name, replicas);
+    }
+
+    // Utility functions
+    function showLoading() {
+        loadingDiv.style.display = 'block';
+        deploymentsContainer.innerHTML = '';
+    }
+
+    function hideLoading() {
+        loadingDiv.style.display = 'none';
+    }
+
+    function showError(message) {
+        errorDiv.textContent = message;
+        errorDiv.style.display = 'block';
+    }
+
+    function hideError() {
+        errorDiv.style.display = 'none';
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+

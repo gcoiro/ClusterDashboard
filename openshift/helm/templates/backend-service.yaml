@@ -1,0 +1,20 @@
+{{- if .Values.backend.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "openshift-dashboard.fullname" . }}-backend
+  labels:
+    {{- include "openshift-dashboard.labels" . | nindent 4 }}
+    component: backend
+spec:
+  ports:
+  - port: {{ .Values.services.backend.port }}
+    targetPort: {{ .Values.services.backend.targetPort }}
+    protocol: TCP
+    name: http
+  selector:
+    {{- include "openshift-dashboard.selectorLabels" . | nindent 4 }}
+    component: backend
+  type: {{ .Values.services.backend.type }}
+{{- end }}
+

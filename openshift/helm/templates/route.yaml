@@ -1,0 +1,20 @@
+{{- if .Values.route.enabled }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ .Values.route.name }}
+  labels:
+    {{- include "openshift-dashboard.labels" . | nindent 4 }}
+spec:
+  to:
+    kind: Service
+    name: {{ include "openshift-dashboard.fullname" . }}-frontend
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: {{ .Values.route.tls.termination }}
+    insecureEdgeTerminationPolicy: {{ .Values.route.tls.insecureEdgeTerminationPolicy }}
+  wildcardPolicy: {{ .Values.route.wildcardPolicy }}
+{{- end }}
+

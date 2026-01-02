@@ -1,0 +1,9 @@
+{
+  "name": "cluster-dashboard",
+  "version": "1.0.0",
+  "description": "Dashboard to control OpenShift deployments",
+  "keywords": ["openshift", "kubernetes", "dashboard"],
+  "author": "",
+  "license": "MIT"
+}
+

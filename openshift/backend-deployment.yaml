@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openshift-dashboard-backend
+  labels:
+    app: openshift-dashboard
+    component: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openshift-dashboard
+      component: backend
+  template:
+    metadata:
+      labels:
+        app: openshift-dashboard
+        component: backend
+    spec:
+      serviceAccountName: openshift-dashboard-sa
+      # IMPORTANT: The ServiceAccount 'openshift-dashboard-sa' must exist in the namespace specified in the ConfigMap
+      containers:
+      - name: backend
+        image: openshift-dashboard-backend:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 9150
+          name: http
+        env:
+        - name: KUBERNETES_API_SERVER
+          valueFrom:
+            configMapKeyRef:
+              name: openshift-dashboard-config
+              key: kubernetes-api-server
+        - name: KUBERNETES_NAMESPACE
+          valueFrom:
+            configMapKeyRef:
+              name: openshift-dashboard-config
+              key: namespace
+        - name: PORT
+          value: "9150"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 9150
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 9150
+          initialDelaySeconds: 10
+          periodSeconds: 5
+
