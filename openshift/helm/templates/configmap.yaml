@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "openshift-dashboard.fullname" . }}-config
+  labels:
+    {{- include "openshift-dashboard.labels" . | nindent 4 }}
+data:
+  kubernetes-api-server: {{ .Values.configMap.kubernetesApiServer | quote }}
+  namespace: {{ .Values.configMap.namespace | quote }}
+  service-account-namespace: {{ .Values.configMap.serviceAccountNamespace | quote }}
+
