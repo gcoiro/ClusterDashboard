@@ -8,115 +8,129 @@ const loadingDiv = document.getElementById('loading');
 const errorDiv = document.getElementById('error');
 
 // State
-let currentNamespace = 'all';
-let deployments = [];
+let currentNamespace = '';
+let workloads = [];
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     loadNamespaces();
-    loadDeployments();
     
     namespaceSelect.addEventListener('change', (e) => {
         currentNamespace = e.target.value;
-        loadDeployments();
+        loadWorkloads();
     });
     
     refreshBtn.addEventListener('click', () => {
-        loadDeployments();
+        loadWorkloads();
     });
 });
 
 // Load namespaces
 async function loadNamespaces() {
     try {
-        const response = await fetch(`${API_BASE_URL}/deployments/namespaces`);
+        const response = await fetch(`${API_BASE_URL}/namespaces`);
         if (!response.ok) throw new Error('Failed to fetch namespaces');
         
         const namespaces = await response.json();
         
-        // Clear existing options except "All Namespaces"
-        namespaceSelect.innerHTML = '<option value="all">All Namespaces</option>';
+        namespaceSelect.innerHTML = '';
         
-        // Add namespace options
         namespaces.forEach(ns => {
             const option = document.createElement('option');
             option.value = ns.name;
             option.textContent = ns.name;
             namespaceSelect.appendChild(option);
         });
+
+        if (namespaces.length > 0) {
+            currentNamespace = namespaces[0].name;
+            namespaceSelect.value = currentNamespace;
+            loadWorkloads();
+        } else {
+            deploymentsContainer.innerHTML = '<div class="loading">No namespaces found</div>';
+        }
     } catch (error) {
         console.error('Error loading namespaces:', error);
     }
 }
 
-// Load deployments
-async function loadDeployments() {
+// Load workloads
+async function loadWorkloads() {
     showLoading();
     hideError();
     
     try {
-        const url = currentNamespace === 'all' 
-            ? `${API_BASE_URL}/deployments`
-            : `${API_BASE_URL}/deployments?namespace=${currentNamespace}`;
-        
-        const response = await fetch(url);
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+        if (!currentNamespace) {
+            deploymentsContainer.innerHTML = '<div class="loading">Select a namespace</div>';
+            hideLoading();
+            return;
         }
-        
-        deployments = await response.json();
-        renderDeployments();
+
+        const [deploymentsResponse, dcsResponse] = await Promise.all([
+            fetch(`${API_BASE_URL}/${currentNamespace}/deployments`),
+            fetch(`${API_BASE_URL}/${currentNamespace}/deploymentconfigs`),
+        ]);
+
+        if (!deploymentsResponse.ok) {
+            const errorData = await deploymentsResponse.json().catch(() => ({}));
+            throw new Error(errorData.detail || `HTTP ${deploymentsResponse.status}: ${deploymentsResponse.statusText}`);
+        }
+
+        if (!dcsResponse.ok) {
+            const errorData = await dcsResponse.json().catch(() => ({}));
+            throw new Error(errorData.detail || `HTTP ${dcsResponse.status}: ${dcsResponse.statusText}`);
+        }
+
+        const deployments = await deploymentsResponse.json();
+        const deploymentConfigs = await dcsResponse.json();
+
+        workloads = [
+            ...deployments.map(item => ({ ...item, kindLabel: 'Deployment' })),
+            ...deploymentConfigs.map(item => ({ ...item, kindLabel: 'DC' })),
+        ];
+
+        renderWorkloads();
         hideLoading();
     } catch (error) {
-        console.error('Error loading deployments:', error);
-        showError(`Failed to load deployments: ${error.message}`);
+        console.error('Error loading workloads:', error);
+        showError(`Failed to load workloads: ${error.message}`);
         hideLoading();
     }
 }
 
-// Render deployments
-function renderDeployments() {
-    if (deployments.length === 0) {
-        deploymentsContainer.innerHTML = '<div class="loading">No deployments found</div>';
+// Render workloads
+function renderWorkloads() {
+    if (workloads.length === 0) {
+        deploymentsContainer.innerHTML = '<div class="loading">No deployments or deploymentconfigs found</div>';
         return;
     }
     
-    deploymentsContainer.innerHTML = deployments.map(deployment => `
+    workloads.sort((a, b) => a.name.localeCompare(b.name));
+
+    deploymentsContainer.innerHTML = workloads.map(workload => `
         <div class="deployment-card">
             <div class="deployment-header">
                 <div>
-                    <div class="deployment-name">${escapeHtml(deployment.name)}</div>
-                    <div class="deployment-namespace">${escapeHtml(deployment.namespace)}</div>
+                    <div class="deployment-name">${escapeHtml(workload.name)}</div>
+                    <div class="deployment-namespace">${escapeHtml(workload.namespace)}</div>
                 </div>
-                <span class="status-badge ${deployment.isReady ? 'status-ready' : 'status-not-ready'}">
-                    ${deployment.isReady ? 'Ready' : 'Not Ready'}
+                <span class="type-badge ${workload.kind === 'deploymentconfig' ? 'type-dc' : 'type-deployment'}">
+                    ${workload.kindLabel}
                 </span>
             </div>
             
             <div class="deployment-info">
                 <div class="info-row">
-                    <span class="info-label">Pods:</span>
-                    <span class="info-value">${deployment.readyReplicas} / ${deployment.replicas}</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">Available:</span>
-                    <span class="info-value">${deployment.availableReplicas}</span>
-                </div>
-                <div class="info-row">
-                    <span class="info-label">Unavailable:</span>
-                    <span class="info-value">${deployment.unavailableReplicas || 0}</span>
+                    <span class="info-label">Replicas:</span>
+                    <span class="info-value">${workload.replicas}</span>
                 </div>
             </div>
             
             <div class="deployment-actions">
-                <button class="btn-action btn-restart" onclick="restartDeployment('${deployment.namespace}', '${deployment.name}')">
-                    Restart
-                </button>
-                <button class="btn-action btn-scale-up" onclick="scaleDeployment('${deployment.namespace}', '${deployment.name}', ${deployment.replicas + 1})">
+                <button class="btn-action btn-scale-up" onclick="scaleWorkload('${workload.kind}', '${workload.namespace}', '${workload.name}', ${workload.replicas + 1})">
                     Scale +1
                 </button>
-                <button class="btn-action btn-scale-down" onclick="scaleDeployment('${deployment.namespace}', '${deployment.name}', ${Math.max(0, deployment.replicas - 1)})">
+                <button class="btn-action btn-scale-down" onclick="scaleWorkload('${workload.kind}', '${workload.namespace}', '${workload.name}', ${Math.max(0, workload.replicas - 1)})">
                     Scale -1
                 </button>
             </div>
@@ -125,14 +139,14 @@ function renderDeployments() {
                 <input 
                     type="number" 
                     class="scale-input" 
-                    id="scale-${deployment.namespace}-${deployment.name}" 
-                    value="${deployment.replicas}" 
+                    id="scale-${workload.namespace}-${workload.name}" 
+                    value="${workload.replicas}" 
                     min="0"
                     placeholder="Replicas"
                 >
                 <button 
                     class="btn-action btn-scale-apply" 
-                    onclick="scaleDeploymentCustom('${deployment.namespace}', '${deployment.name}')"
+                    onclick="scaleWorkloadCustom('${workload.kind}', '${workload.namespace}', '${workload.name}')"
                 >
                     Set Replicas
                 </button>
@@ -141,47 +155,23 @@ function renderDeployments() {
     `).join('');
 }
 
-// Restart deployment
-async function restartDeployment(namespace, name) {
-    if (!confirm(`Are you sure you want to restart deployment "${name}" in namespace "${namespace}"?`)) {
-        return;
-    }
-    
-    try {
-        const response = await fetch(`${API_BASE_URL}/deployments/${namespace}/${name}/restart`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-        });
-        
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.detail || 'Failed to restart deployment');
-        }
-        
-        const result = await response.json();
-        alert(result.message || 'Deployment restarted successfully');
-        loadDeployments();
-    } catch (error) {
-        alert(`Error: ${error.message}`);
-        console.error('Error restarting deployment:', error);
-    }
-}
-
-// Scale deployment
-async function scaleDeployment(namespace, name, replicas) {
+// Scale workload
+async function scaleWorkload(kind, namespace, name, replicas) {
     if (replicas < 0) {
         alert('Replicas cannot be negative');
         return;
     }
     
-    if (!confirm(`Scale deployment "${name}" in namespace "${namespace}" to ${replicas} replicas?`)) {
+    if (!confirm(`Scale ${kind} "${name}" in namespace "${namespace}" to ${replicas} replicas?`)) {
         return;
     }
     
     try {
-        const response = await fetch(`${API_BASE_URL}/deployments/${namespace}/${name}/scale`, {
+        const endpoint = kind === 'deploymentconfig'
+            ? `${API_BASE_URL}/deploymentconfigs/${namespace}/${name}/scale`
+            : `${API_BASE_URL}/deployments/${namespace}/${name}/scale`;
+
+        const response = await fetch(endpoint, {
             method: 'PATCH',
             headers: {
                 'Content-Type': 'application/json',
@@ -191,20 +181,20 @@ async function scaleDeployment(namespace, name, replicas) {
         
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.detail || 'Failed to scale deployment');
+            throw new Error(errorData.detail || 'Failed to scale workload');
         }
         
         const result = await response.json();
-        alert(result.message || 'Deployment scaled successfully');
-        loadDeployments();
+        alert(result.message || 'Workload scaled successfully');
+        loadWorkloads();
     } catch (error) {
         alert(`Error: ${error.message}`);
-        console.error('Error scaling deployment:', error);
+        console.error('Error scaling workload:', error);
     }
 }
 
-// Scale deployment with custom value
-async function scaleDeploymentCustom(namespace, name) {
+// Scale workload with custom value
+async function scaleWorkloadCustom(kind, namespace, name) {
     const input = document.getElementById(`scale-${namespace}-${name}`);
     const replicas = parseInt(input.value, 10);
     
@@ -213,7 +203,7 @@ async function scaleDeploymentCustom(namespace, name) {
         return;
     }
     
-    await scaleDeployment(namespace, name, replicas);
+    await scaleWorkload(kind, namespace, name, replicas);
 }
 
 // Utility functions

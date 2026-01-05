@@ -14,15 +14,13 @@
 
         <div class="controls">
             <div class="namespace-filter">
-                <label for="namespace-select">Filter by Namespace:</label>
-                <select id="namespace-select">
-                    <option value="all">All Namespaces</option>
-                </select>
+                <label for="namespace-select">Namespace:</label>
+                <select id="namespace-select"></select>
                 <button id="refresh-btn" class="btn btn-primary">Refresh</button>
             </div>
         </div>
 
-        <div id="loading" class="loading">Loading deployments...</div>
+        <div id="loading" class="loading">Loading workloads...</div>
         <div id="error" class="error" style="display: none;"></div>
 
         <div id="deployments-container" class="deployments-grid"></div>
