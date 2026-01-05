@@ -83,6 +83,7 @@ The following table lists the configurable parameters and their default values:
 | `backend.resources.limits.memory` | Memory limit | `512Mi` |
 | `backend.resources.limits.cpu` | CPU limit | `500m` |
 | `backend.containerPort` | Container port | `9150` |
+| `backend.namespacesAllowlist` | Comma-separated namespace allowlist | `""` |
 
 ### Services
 

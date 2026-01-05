@@ -70,6 +70,7 @@ backend:
       port: 9150
     initialDelaySeconds: 10
     periodSeconds: 5
+  namespacesAllowlist: ""
 
 # ConfigMap configuration
 configMap:

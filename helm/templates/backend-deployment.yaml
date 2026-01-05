@@ -37,6 +37,10 @@ spec:
             configMapKeyRef:
               name: {{ include "openshift-dashboard.fullname" . }}-config
               key: namespace
+        {{- if .Values.backend.namespacesAllowlist }}
+        - name: KUBERNETES_NAMESPACES
+          value: {{ .Values.backend.namespacesAllowlist | quote }}
+        {{- end }}
         - name: PORT
           value: {{ .Values.backend.containerPort | quote }}
         resources:

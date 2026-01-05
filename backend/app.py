@@ -29,6 +29,7 @@ if not KUBERNETES_TOKEN:
         with open(token_file, "r") as f:
             KUBERNETES_TOKEN = f.read().strip()
 KUBERNETES_NAMESPACE = os.getenv("KUBERNETES_NAMESPACE", "default")
+KUBERNETES_NAMESPACES = os.getenv("KUBERNETES_NAMESPACES", "").strip()
 
 
 def get_k8s_headers():
@@ -37,6 +38,17 @@ def get_k8s_headers():
         "Authorization": f"Bearer {KUBERNETES_TOKEN}",
         "Content-Type": "application/json",
     }
+
+
+def get_allowed_namespaces():
+    """Return an explicit namespace allowlist when configured."""
+    if KUBERNETES_NAMESPACES:
+        return [ns.strip() for ns in KUBERNETES_NAMESPACES.split(",") if ns.strip()]
+    if KUBERNETES_NAMESPACE and KUBERNETES_NAMESPACE != "all":
+        return [KUBERNETES_NAMESPACE]
+    return []
+
+
 
 
 @app.get("/api/health")
@@ -50,19 +62,34 @@ async def get_deployments(namespace: str = Query(None, description="Namespace fi
     """Get all deployments, optionally filtered by namespace"""
     try:
         headers = get_k8s_headers()
-        
+        allowed = get_allowed_namespaces()
+
         if namespace and namespace != "all":
-            # Get deployments from specific namespace
+            if allowed and namespace not in allowed:
+                raise HTTPException(status_code=403, detail="Namespace access denied by allowlist")
             url = f"{KUBERNETES_API_SERVER}/apis/apps/v1/namespaces/{namespace}/deployments"
+            async with httpx.AsyncClient(verify=False) as client:  # verify=False for self-signed certs
+                response = await client.get(url, headers=headers, timeout=30.0)
+                response.raise_for_status()
+                data = response.json()
         else:
-            # Get deployments from all namespaces
-            url = f"{KUBERNETES_API_SERVER}/apis/apps/v1/deployments"
-        
-        async with httpx.AsyncClient(verify=False) as client:  # verify=False for self-signed certs
-            response = await client.get(url, headers=headers, timeout=30.0)
-            response.raise_for_status()
-            data = response.json()
-        
+            if allowed:
+                items = []
+                async with httpx.AsyncClient(verify=False) as client:
+                    for ns in allowed:
+                        url = f"{KUBERNETES_API_SERVER}/apis/apps/v1/namespaces/{ns}/deployments"
+                        response = await client.get(url, headers=headers, timeout=30.0)
+                        response.raise_for_status()
+                        data = response.json()
+                        items.extend(data.get("items", []))
+                data = {"items": items}
+            else:
+                url = f"{KUBERNETES_API_SERVER}/apis/apps/v1/deployments"
+                async with httpx.AsyncClient(verify=False) as client:  # verify=False for self-signed certs
+                    response = await client.get(url, headers=headers, timeout=30.0)
+                    response.raise_for_status()
+                    data = response.json()
+
         deployments = []
         for item in data.get("items", []):
             spec_replicas = item.get("spec", {}).get("replicas", 0)
@@ -91,14 +118,18 @@ async def get_deployments(namespace: str = Query(None, description="Namespace fi
 async def get_namespaces():
     """Get all namespaces"""
     try:
+        allowed = get_allowed_namespaces()
+        if allowed:
+            return [{"name": ns} for ns in allowed]
+
         headers = get_k8s_headers()
         url = f"{KUBERNETES_API_SERVER}/api/v1/namespaces"
-        
+
         async with httpx.AsyncClient(verify=False) as client:
             response = await client.get(url, headers=headers, timeout=30.0)
             response.raise_for_status()
             data = response.json()
-        
+
         namespaces = [{"name": item["metadata"]["name"]} for item in data.get("items", [])]
         return namespaces
     except httpx.HTTPStatusError as e:
