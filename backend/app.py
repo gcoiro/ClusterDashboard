@@ -1,7 +1,8 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import httpx
+import json
+import subprocess
 import os
 from dotenv import load_dotenv
 
@@ -32,12 +33,36 @@ KUBERNETES_NAMESPACE = os.getenv("KUBERNETES_NAMESPACE", "default")
 KUBERNETES_NAMESPACES = os.getenv("KUBERNETES_NAMESPACES", "").strip()
 
 
-def get_k8s_headers():
-    """Get headers for Kubernetes API requests"""
-    return {
-        "Authorization": f"Bearer {KUBERNETES_TOKEN}",
-        "Content-Type": "application/json",
-    }
+def oc_base_args():
+    """Base oc arguments for in-cluster auth."""
+    return [
+        "oc",
+        "--server",
+        KUBERNETES_API_SERVER,
+        "--token",
+        KUBERNETES_TOKEN,
+        "--insecure-skip-tls-verify=true",
+    ]
+
+
+def run_oc(args, expect_json=False):
+    """Run oc command and optionally parse JSON output."""
+    result = subprocess.run(
+        oc_base_args() + args,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        status = 403 if "forbidden" in detail.lower() else 500
+        raise HTTPException(status_code=status, detail=f"oc error: {detail}")
+    if expect_json:
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=500, detail=f"oc output parse error: {str(e)}")
+    return result.stdout
 
 
 def get_allowed_namespaces():
@@ -61,34 +86,18 @@ async def health_check():
 async def get_deployments(namespace: str = Query(None, description="Namespace filter (use 'all' for all namespaces)")):
     """Get all deployments, optionally filtered by namespace"""
     try:
-        headers = get_k8s_headers()
-        allowed = get_allowed_namespaces()
-
         if namespace and namespace != "all":
-            if allowed and namespace not in allowed:
-                raise HTTPException(status_code=403, detail="Namespace access denied by allowlist")
-            url = f"{KUBERNETES_API_SERVER}/apis/apps/v1/namespaces/{namespace}/deployments"
-            async with httpx.AsyncClient(verify=False) as client:  # verify=False for self-signed certs
-                response = await client.get(url, headers=headers, timeout=30.0)
-                response.raise_for_status()
-                data = response.json()
+            data = run_oc(["get", "deployments", "-n", namespace, "-o", "json"], expect_json=True)
         else:
-            if allowed:
-                items = []
-                async with httpx.AsyncClient(verify=False) as client:
-                    for ns in allowed:
-                        url = f"{KUBERNETES_API_SERVER}/apis/apps/v1/namespaces/{ns}/deployments"
-                        response = await client.get(url, headers=headers, timeout=30.0)
-                        response.raise_for_status()
-                        data = response.json()
-                        items.extend(data.get("items", []))
-                data = {"items": items}
-            else:
-                url = f"{KUBERNETES_API_SERVER}/apis/apps/v1/deployments"
-                async with httpx.AsyncClient(verify=False) as client:  # verify=False for self-signed certs
-                    response = await client.get(url, headers=headers, timeout=30.0)
-                    response.raise_for_status()
-                    data = response.json()
+            projects = run_oc(["get", "projects", "-o", "json"], expect_json=True)
+            items = []
+            for project in projects.get("items", []):
+                ns = project.get("metadata", {}).get("name")
+                if not ns:
+                    continue
+                ns_data = run_oc(["get", "deployments", "-n", ns, "-o", "json"], expect_json=True)
+                items.extend(ns_data.get("items", []))
+            data = {"items": items}
 
         deployments = []
         for item in data.get("items", []):
@@ -118,22 +127,9 @@ async def get_deployments(namespace: str = Query(None, description="Namespace fi
 async def get_namespaces():
     """Get all namespaces"""
     try:
-        allowed = get_allowed_namespaces()
-        if allowed:
-            return [{"name": ns} for ns in allowed]
-
-        headers = get_k8s_headers()
-        url = f"{KUBERNETES_API_SERVER}/api/v1/namespaces"
-
-        async with httpx.AsyncClient(verify=False) as client:
-            response = await client.get(url, headers=headers, timeout=30.0)
-            response.raise_for_status()
-            data = response.json()
-
+        data = run_oc(["get", "projects", "-o", "json"], expect_json=True)
         namespaces = [{"name": item["metadata"]["name"]} for item in data.get("items", [])]
         return namespaces
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=f"Kubernetes API error: {e.response.text}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch namespaces: {str(e)}")
 
@@ -149,28 +145,12 @@ async def scale_deployment(namespace: str, name: str, request: ScaleRequest):
         if request.replicas < 0:
             raise HTTPException(status_code=400, detail="Replicas must be >= 0")
         
-        headers = get_k8s_headers()
-        url = f"{KUBERNETES_API_SERVER}/apis/apps/v1/namespaces/{namespace}/deployments/{name}"
-        
-        # Patch the deployment
-        patch_data = {
-            "spec": {
-                "replicas": request.replicas
-            }
-        }
-        
-        async with httpx.AsyncClient(verify=False) as client:
-            response = await client.patch(
-                url,
-                json=patch_data,
-                headers={**headers, "Content-Type": "application/merge-patch+json"},
-                timeout=30.0
-            )
-            response.raise_for_status()
+        run_oc(
+            ["scale", f"deployment/{name}", "-n", namespace, f"--replicas={request.replicas}"],
+            expect_json=False,
+        )
         
         return {"success": True, "message": f"Scaled {name} to {request.replicas} replicas"}
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=f"Kubernetes API error: {e.response.text}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to scale deployment: {str(e)}")
 
@@ -179,42 +159,12 @@ async def scale_deployment(namespace: str, name: str, request: ScaleRequest):
 async def restart_deployment(namespace: str, name: str):
     """Restart a deployment (rollout restart)"""
     try:
-        headers = get_k8s_headers()
-        url = f"{KUBERNETES_API_SERVER}/apis/apps/v1/namespaces/{namespace}/deployments/{name}"
-        
-        # Get current deployment
-        async with httpx.AsyncClient(verify=False) as client:
-            get_response = await client.get(url, headers=headers, timeout=30.0)
-            get_response.raise_for_status()
-            deployment = get_response.json()
-        
-        # Add restart annotation
-        annotations = deployment.get("spec", {}).get("template", {}).get("metadata", {}).get("annotations", {})
-        annotations["kubectl.kubernetes.io/restartedAt"] = __import__("datetime").datetime.now().isoformat()
-        
-        # Patch the deployment
-        patch_data = {
-            "spec": {
-                "template": {
-                    "metadata": {
-                        "annotations": annotations
-                    }
-                }
-            }
-        }
-        
-        async with httpx.AsyncClient(verify=False) as client:
-            response = await client.patch(
-                url,
-                json=patch_data,
-                headers={**headers, "Content-Type": "application/merge-patch+json"},
-                timeout=30.0
-            )
-            response.raise_for_status()
+        run_oc(
+            ["rollout", "restart", f"deployment/{name}", "-n", namespace],
+            expect_json=False,
+        )
         
         return {"success": True, "message": f"Restarted deployment {name}"}
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=f"Kubernetes API error: {e.response.text}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to restart deployment: {str(e)}")
 
