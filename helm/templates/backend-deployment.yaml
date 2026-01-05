@@ -23,6 +23,15 @@ spec:
       - name: backend
         image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
         imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+        command: ["uvicorn"]
+        args:
+          - "app:app"
+          - "--app-dir"
+          - "/tmp"
+          - "--host"
+          - "0.0.0.0"
+          - "--port"
+          - {{ .Values.backend.containerPort | quote }}
         ports:
         - containerPort: {{ .Values.backend.containerPort }}
           name: http
@@ -39,6 +48,10 @@ spec:
               key: namespace
         - name: PORT
           value: {{ .Values.backend.containerPort | quote }}
+        volumeMounts:
+        - name: backend-app
+          mountPath: /tmp/app.py
+          subPath: app.py
         resources:
           {{- toYaml .Values.backend.resources | nindent 10 }}
         livenessProbe:
@@ -53,5 +66,9 @@ spec:
             port: {{ .Values.backend.readinessProbe.httpGet.port }}
           initialDelaySeconds: {{ .Values.backend.readinessProbe.initialDelaySeconds }}
           periodSeconds: {{ .Values.backend.readinessProbe.periodSeconds }}
+      volumes:
+      - name: backend-app
+        configMap:
+          name: {{ include "openshift-dashboard.fullname" . }}-backend-app
 {{- end }}
 
