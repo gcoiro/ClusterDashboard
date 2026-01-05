@@ -25,33 +25,32 @@ A modern web dashboard to monitor and control OpenShift/Kubernetes deployments. 
 
 ## Setup
 
-### Option 1: Deploy to OpenShift (Recommended for Production)
+### Option 1: Deploy with Helm (Recommended for Production)
 
-Deploy the dashboard directly in your OpenShift cluster. See the [OpenShift Deployment Guide](openshift/README.md) for detailed instructions.
+Deploy the dashboard using the Helm chart in `helm/`. See `helm/README.md` for detailed instructions.
 
-**⚠️ IMPORTANT PREREQUISITE**: You **MUST** create a ServiceAccount named `openshift-dashboard-sa` in your namespace before deploying. See the [OpenShift README](openshift/README.md) for details.
+**IMPORTANT PREREQUISITE**: You **MUST** create a ServiceAccount named `openshift-dashboard-sa` in your namespace before deploying (or set `serviceAccount.create: true` in Helm and let it create one).
 
 **Quick Start:**
 ```bash
-# 1. Create ServiceAccount and RBAC
-cd openshift
-oc apply -f serviceaccount.yaml
-
-# 2. Build and push backend image to your registry
-docker build -t <your-registry>/openshift-dashboard-backend:latest ../backend
+# 1. Build and push backend image to your registry
+docker build -t <your-registry>/openshift-dashboard-backend:latest ./backend
 docker push <your-registry>/openshift-dashboard-backend:latest
 
-# 3. Update backend-deployment.yaml with your image URL
+# 2. Build and push frontend image to your registry
+docker build -t <your-registry>/openshift-dashboard-frontend:latest ./frontend
+docker push <your-registry>/openshift-dashboard-frontend:latest
 
-# 4. Deploy
-chmod +x deploy.sh
-./deploy.sh
+# 3. Install the Helm chart
+helm install openshift-dashboard ./helm \
+  --set backend.image.repository=<your-registry>/openshift-dashboard-backend \
+  --set frontend.image.repository=<your-registry>/openshift-dashboard-frontend
 ```
 
 **Configuration:**
 - Backend runs on port **9150**
-- Frontend runs on port **8080** (using nginx:1.29.3-trixie-perl)
-- ServiceAccount must exist in the namespace specified in ConfigMap
+- Frontend runs on port **8080**
+- ServiceAccount must exist in the namespace specified in ConfigMap (or be created by Helm)
 
 ### Option 2: Docker Compose (Local Development)
 

@@ -19,7 +19,7 @@ This Helm chart deploys the OpenShift Dashboard application on OpenShift/Kuberne
 ### Basic Installation
 
 ```bash
-cd openshift/helm
+cd helm
 helm install openshift-dashboard . --namespace default
 ```
 
@@ -60,8 +60,8 @@ The following table lists the configurable parameters and their default values:
 |-----------|-------------|---------|
 | `frontend.enabled` | Enable frontend deployment | `true` |
 | `frontend.replicas` | Number of replicas | `1` |
-| `frontend.image.repository` | Image repository | `nginx` |
-| `frontend.image.tag` | Image tag | `1.29.3-trixie-perl` |
+| `frontend.image.repository` | Image repository | `openshift-dashboard-frontend` |
+| `frontend.image.tag` | Image tag | `latest` |
 | `frontend.image.pullPolicy` | Image pull policy | `Always` |
 | `frontend.resources.requests.memory` | Memory request | `64Mi` |
 | `frontend.resources.requests.cpu` | CPU request | `50m` |
@@ -165,24 +165,9 @@ serviceAccount:
 - Scale deployments
 - Restart deployments (patch)
 
-## Frontend Files ConfigMap
+## Frontend Image
 
-The frontend files (HTML, CSS, JS) can be provided in two ways:
-
-1. **Via values.yaml**: Set `frontend.files` with the file contents:
-```yaml
-frontend:
-  files:
-    index.html: |
-      <!DOCTYPE html>
-      ...
-    styles.css: |
-      * { ... }
-    app.js: |
-      const API_BASE_URL = ...
-```
-
-2. **Create separately**: Create the ConfigMap separately and reference it, or copy content from the original `frontend-files-configmap.yaml`.
+The frontend assets are baked into the Docker image built from `frontend/Dockerfile`. Build and push it to your registry, then set `frontend.image.repository` and `frontend.image.tag` in your values file.
 
 ## Uninstallation
 

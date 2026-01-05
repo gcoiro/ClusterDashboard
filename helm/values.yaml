@@ -18,8 +18,8 @@ frontend:
   enabled: true
   replicas: 1
   image:
-    repository: nginx
-    tag: 1.29.3-trixie-perl
+    repository: openshift-dashboard-frontend
+    tag: latest
     pullPolicy: Always
   resources:
     requests:
