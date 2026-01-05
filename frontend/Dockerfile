@@ -11,6 +11,6 @@ COPY app.js /usr/share/nginx/html/
 # Expose port
 EXPOSE 8080
 
-# Start nginx
-CMD ["nginx", "-g", "daemon off;"]
+# Start nginx (write pid under /tmp for non-root environments)
+CMD ["nginx", "-g", "pid /tmp/nginx.pid; daemon off;"]
 
