@@ -95,7 +95,12 @@ async def get_deployments(namespace: str = Query(None, description="Namespace fi
                 ns = project.get("metadata", {}).get("name")
                 if not ns:
                     continue
-                ns_data = run_oc(["get", "deployments", "-n", ns, "-o", "json"], expect_json=True)
+                try:
+                    ns_data = run_oc(["get", "deployments", "-n", ns, "-o", "json"], expect_json=True)
+                except HTTPException as e:
+                    if e.status_code == 403:
+                        continue
+                    raise
                 items.extend(ns_data.get("items", []))
             data = {"items": items}
 
