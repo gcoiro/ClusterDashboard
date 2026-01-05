@@ -122,8 +122,8 @@ async def get_deployments(namespace: str = Query(None, description="Namespace fi
             })
         
         return deployments
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=f"Kubernetes API error: {e.response.text}")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch deployments: {str(e)}")
 
@@ -135,6 +135,8 @@ async def get_namespaces():
         data = run_oc(["get", "projects", "-o", "json"], expect_json=True)
         namespaces = [{"name": item["metadata"]["name"]} for item in data.get("items", [])]
         return namespaces
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch namespaces: {str(e)}")
 
@@ -156,6 +158,8 @@ async def scale_deployment(namespace: str, name: str, request: ScaleRequest):
         )
         
         return {"success": True, "message": f"Scaled {name} to {request.replicas} replicas"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to scale deployment: {str(e)}")
 
@@ -170,6 +174,8 @@ async def restart_deployment(namespace: str, name: str):
         )
         
         return {"success": True, "message": f"Restarted deployment {name}"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to restart deployment: {str(e)}")
 
