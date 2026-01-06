@@ -31,11 +31,15 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger("openshift-dashboard")
+token_source = "env"
 if not KUBERNETES_TOKEN:
     token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
     if os.path.exists(token_file):
         with open(token_file, "r") as f:
             KUBERNETES_TOKEN = f.read().strip()
+            token_source = "serviceaccount"
+logger.info("API server: %s", KUBERNETES_API_SERVER)
+logger.info("Token source: %s", token_source)
 
 
 def oc_base_args():
