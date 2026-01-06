@@ -447,7 +447,7 @@ async def get_spring_config(namespace: str, workloadName: str):
         logger.info("Using service %s on port %s", service_name, port)
 
         service_host = f"{service_name}.{namespace}.svc.cluster.local"
-        actuator_url = f"http://{service_host}:{port}/actuator/health/env"
+        actuator_url = f"http://{service_host}:{port}/actuator/env"
         actuator_payload = fetch_actuator_env(actuator_url)
 
         return {
