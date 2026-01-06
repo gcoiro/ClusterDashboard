@@ -84,6 +84,15 @@ header h1 {
     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
 }
 
+.btn-secondary {
+    background: #eceff1;
+    color: #37474f;
+}
+
+.btn-secondary:hover {
+    background: #cfd8dc;
+}
+
 .loading, .error {
     text-align: center;
     padding: 40px;
@@ -103,6 +112,152 @@ header h1 {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
     gap: 20px;
+}
+
+.config-panel {
+    background: white;
+    border-radius: 12px;
+    padding: 20px 25px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+    margin-bottom: 30px;
+}
+
+.config-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 10px;
+}
+
+.config-meta {
+    font-size: 0.95em;
+    color: #546e7a;
+}
+
+.config-status {
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 0.95em;
+    margin-bottom: 12px;
+    background: #f5f5f5;
+    color: #455a64;
+}
+
+.config-status.success {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.config-status.error {
+    background: #ffebee;
+    color: #c62828;
+}
+
+.config-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 15px;
+}
+
+.config-search {
+    flex: 1;
+    min-width: 240px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: 2px solid #e0e0e0;
+    font-size: 0.95em;
+}
+
+.config-search:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
+.config-profiles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.profile-chip {
+    background: #e3f2fd;
+    color: #1565c0;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.85em;
+    font-weight: 600;
+}
+
+.profile-empty {
+    background: #eceff1;
+    color: #546e7a;
+}
+
+.config-content {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.config-source {
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    padding: 12px;
+    background: #fafafa;
+}
+
+.config-source summary {
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+}
+
+.config-count {
+    background: #e0e0e0;
+    border-radius: 12px;
+    padding: 2px 8px;
+    font-size: 0.85em;
+}
+
+.config-rows {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.config-row {
+    display: grid;
+    grid-template-columns: 1fr 1.4fr;
+    gap: 10px;
+    padding: 8px;
+    border-radius: 6px;
+    background: white;
+    border: 1px solid #eee;
+    font-size: 0.9em;
+}
+
+.config-key {
+    font-weight: 600;
+    color: #37474f;
+    word-break: break-all;
+}
+
+.config-value {
+    color: #546e7a;
+    word-break: break-word;
+}
+
+.config-empty {
+    padding: 15px;
+    text-align: center;
+    color: #607d8b;
 }
 
 .deployment-card {
@@ -283,6 +438,16 @@ header h1 {
     background: #5568d3;
 }
 
+.btn-config {
+    background: #009688;
+    color: white;
+}
+
+.btn-config:hover {
+    background: #00796b;
+    transform: translateY(-2px);
+}
+
 @media (max-width: 768px) {
     .deployments-grid {
         grid-template-columns: 1fr;
@@ -295,6 +460,15 @@ header h1 {
 
     .namespace-filter select {
         width: 100%;
+    }
+
+    .config-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .config-row {
+        grid-template-columns: 1fr;
     }
 }
 

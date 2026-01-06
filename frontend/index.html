@@ -23,6 +23,22 @@
         <div id="loading" class="loading">Loading workloads...</div>
         <div id="error" class="error" style="display: none;"></div>
 
+        <section id="config-panel" class="config-panel" style="display: none;">
+            <div class="config-header">
+                <div>
+                    <h2 id="config-title">Spring Config Explorer</h2>
+                    <div id="config-meta" class="config-meta"></div>
+                </div>
+                <button id="config-close" class="btn btn-secondary">Close</button>
+            </div>
+            <div id="config-status" class="config-status"></div>
+            <div class="config-toolbar">
+                <input id="config-search" class="config-search" type="search" placeholder="Search keys or values">
+                <div id="config-profiles" class="config-profiles"></div>
+            </div>
+            <div id="config-content" class="config-content"></div>
+        </section>
+
         <div id="deployments-container" class="deployments-grid"></div>
     </div>
 

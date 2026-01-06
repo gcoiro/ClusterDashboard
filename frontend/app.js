@@ -6,10 +6,19 @@ const refreshBtn = document.getElementById('refresh-btn');
 const deploymentsContainer = document.getElementById('deployments-container');
 const loadingDiv = document.getElementById('loading');
 const errorDiv = document.getElementById('error');
+const configPanel = document.getElementById('config-panel');
+const configTitle = document.getElementById('config-title');
+const configMeta = document.getElementById('config-meta');
+const configStatus = document.getElementById('config-status');
+const configSearch = document.getElementById('config-search');
+const configProfiles = document.getElementById('config-profiles');
+const configContent = document.getElementById('config-content');
+const configClose = document.getElementById('config-close');
 
 // State
 let currentNamespace = '';
 let workloads = [];
+let configState = null;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -22,6 +31,14 @@ document.addEventListener('DOMContentLoaded', () => {
     
     refreshBtn.addEventListener('click', () => {
         loadWorkloads();
+    });
+
+    configClose.addEventListener('click', () => {
+        hideConfigPanel();
+    });
+
+    configSearch.addEventListener('input', () => {
+        renderConfigSources();
     });
 });
 
@@ -133,6 +150,9 @@ function renderWorkloads() {
                 <button class="btn-action btn-scale-down" onclick="scaleWorkload('${workload.kind}', '${workload.namespace}', '${workload.name}', ${Math.max(0, workload.replicas - 1)})">
                     Scale -1
                 </button>
+                <button class="btn-action btn-config" onclick="viewSpringConfig('${workload.namespace}', '${workload.name}', '${workload.kindLabel}')">
+                    View Spring Config
+                </button>
             </div>
             
             <div class="scale-input-group">
@@ -153,6 +173,154 @@ function renderWorkloads() {
             </div>
         </div>
     `).join('');
+}
+
+function showConfigPanel() {
+    configPanel.style.display = 'block';
+}
+
+function hideConfigPanel() {
+    configPanel.style.display = 'none';
+    configState = null;
+    configContent.innerHTML = '';
+    configProfiles.innerHTML = '';
+    configSearch.value = '';
+    configStatus.textContent = '';
+}
+
+function setConfigStatus(message, type = 'info') {
+    configStatus.textContent = message;
+    configStatus.className = `config-status ${type}`;
+}
+
+function extractEnvDetails(payload) {
+    if (!payload || typeof payload !== 'object') {
+        return { propertySources: [], activeProfiles: [] };
+    }
+
+    if (payload.details && payload.details.propertySources) {
+        return {
+            propertySources: payload.details.propertySources,
+            activeProfiles: payload.details.activeProfiles || [],
+        };
+    }
+
+    if (payload.components && payload.components.env && payload.components.env.details) {
+        return {
+            propertySources: payload.components.env.details.propertySources || [],
+            activeProfiles: payload.components.env.details.activeProfiles || [],
+        };
+    }
+
+    return { propertySources: [], activeProfiles: [] };
+}
+
+function formatValue(value) {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string') return value;
+    try {
+        return JSON.stringify(value);
+    } catch (error) {
+        return String(value);
+    }
+}
+
+function renderProfiles(activeProfiles) {
+    if (!activeProfiles || activeProfiles.length === 0) {
+        configProfiles.innerHTML = '<span class="profile-chip profile-empty">No active profiles</span>';
+        return;
+    }
+
+    configProfiles.innerHTML = activeProfiles
+        .map(profile => `<span class="profile-chip">${escapeHtml(profile)}</span>`)
+        .join('');
+}
+
+function renderConfigSources() {
+    if (!configState) {
+        configContent.innerHTML = '';
+        return;
+    }
+
+    const searchTerm = configSearch.value.trim().toLowerCase();
+    const sources = configState.propertySources || [];
+
+    if (sources.length === 0) {
+        configContent.innerHTML = '<div class="config-empty">No property sources found.</div>';
+        return;
+    }
+
+    const sourceHtml = sources.map(source => {
+        const properties = source.properties || {};
+        const entries = Object.entries(properties)
+            .map(([key, value]) => {
+                const propertyValue = value && typeof value === 'object' && 'value' in value ? value.value : value;
+                return { key, value: formatValue(propertyValue) };
+            })
+            .filter(entry => {
+                if (!searchTerm) return true;
+                return entry.key.toLowerCase().includes(searchTerm)
+                    || entry.value.toLowerCase().includes(searchTerm);
+            });
+
+        if (entries.length === 0) {
+            return '';
+        }
+
+        const rows = entries.map(entry => `
+            <div class="config-row">
+                <div class="config-key">${escapeHtml(entry.key)}</div>
+                <div class="config-value">${escapeHtml(entry.value)}</div>
+            </div>
+        `).join('');
+
+        return `
+            <details class="config-source" open>
+                <summary>${escapeHtml(source.name || 'propertySource')} <span class="config-count">${entries.length}</span></summary>
+                <div class="config-rows">${rows}</div>
+            </details>
+        `;
+    }).join('');
+
+    configContent.innerHTML = sourceHtml || '<div class="config-empty">No matching properties.</div>';
+}
+
+async function viewSpringConfig(namespace, workloadName, kindLabel) {
+    showConfigPanel();
+    configTitle.textContent = `Spring Config Explorer`;
+    configMeta.textContent = `Loading ${workloadName} (${kindLabel}) in ${namespace}...`;
+    setConfigStatus('Fetching config from running pod...', 'info');
+    configContent.innerHTML = '';
+    configProfiles.innerHTML = '';
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/config/${namespace}/${workloadName}`);
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            const message = errorData.detail?.message || errorData.detail || 'Failed to fetch config';
+            throw new Error(message);
+        }
+
+        const data = await response.json();
+        const payload = data.payload || data;
+        const { propertySources, activeProfiles } = extractEnvDetails(payload);
+
+        configState = {
+            propertySources,
+            activeProfiles,
+        };
+
+        configTitle.textContent = `Spring Config Explorer`;
+        configMeta.textContent = `${data.workloadName} (${data.workloadKind}) | ${data.namespace} | Pod ${data.podName || 'unknown'} | ${data.podIP || 'n/a'}:${data.port || 'n/a'}`;
+        setConfigStatus(`Loaded from ${data.actuatorUrl || 'actuator'}`, 'success');
+
+        renderProfiles(activeProfiles);
+        renderConfigSources();
+    } catch (error) {
+        console.error('Error loading spring config:', error);
+        setConfigStatus(`Error: ${error.message}`, 'error');
+        configContent.innerHTML = '';
+    }
 }
 
 // Scale workload
