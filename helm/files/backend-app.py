@@ -228,24 +228,20 @@ def get_running_pod(namespace: str, label_selector: str):
     return None
 
 
-def get_matching_service(namespace: str, label_selector: str):
-    if not label_selector:
+def get_service_by_name(namespace: str, service_name: str):
+    if not service_name:
         return None
     try:
-        data = run_oc(["get", "services", "-n", namespace, "-l", label_selector, "-o", "json"], expect_json=True)
+        return run_oc(["get", "service", service_name, "-n", namespace, "-o", "json"], expect_json=True)
     except HTTPException as exc:
         detail = getattr(exc, "detail", "")
         if isinstance(detail, str) and (
-            is_missing_resource_error(detail, "services") or is_missing_resource_error(detail, "service")
+            is_not_found_error(detail)
+            or is_missing_resource_error(detail, "services")
+            or is_missing_resource_error(detail, "service")
         ):
             return None
         raise
-
-    items = data.get("items", [])
-    if not items:
-        return None
-    items.sort(key=lambda item: item.get("metadata", {}).get("name") or "")
-    return items[0]
 
 
 def resolve_service_port(service: dict):
@@ -433,12 +429,12 @@ async def get_spring_config(namespace: str, workloadName: str):
             )
         logger.info("Using label selector %s", label_selector)
 
-        service = get_matching_service(namespace, label_selector)
+        service = get_service_by_name(namespace, workloadName)
         if not service:
             raise_structured_error(
                 404,
                 "service_not_found",
-                f"No matching service found for workload '{workloadName}'",
+                f"No service named '{workloadName}' found in namespace '{namespace}'",
             )
 
         service_name = service.get("metadata", {}).get("name")
