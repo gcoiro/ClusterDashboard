@@ -228,6 +228,35 @@ def get_running_pod(namespace: str, label_selector: str):
     return None
 
 
+def get_matching_service(namespace: str, label_selector: str):
+    if not label_selector:
+        return None
+    try:
+        data = run_oc(["get", "services", "-n", namespace, "-l", label_selector, "-o", "json"], expect_json=True)
+    except HTTPException as exc:
+        detail = getattr(exc, "detail", "")
+        if isinstance(detail, str) and (
+            is_missing_resource_error(detail, "services") or is_missing_resource_error(detail, "service")
+        ):
+            return None
+        raise
+
+    items = data.get("items", [])
+    if not items:
+        return None
+    items.sort(key=lambda item: item.get("metadata", {}).get("name") or "")
+    return items[0]
+
+
+def resolve_service_port(service: dict):
+    ports = service.get("spec", {}).get("ports", []) or []
+    for port_entry in ports:
+        port = port_entry.get("port")
+        if isinstance(port, int) and port > 0:
+            return port
+    return None
+
+
 def detect_pod_port(pod: dict):
     containers = pod.get("spec", {}).get("containers", [])
     for container in containers:
@@ -404,28 +433,25 @@ async def get_spring_config(namespace: str, workloadName: str):
             )
         logger.info("Using label selector %s", label_selector)
 
-        pod = get_running_pod(namespace, label_selector)
-        if not pod:
+        service = get_matching_service(namespace, label_selector)
+        if not service:
             raise_structured_error(
                 404,
-                "no_running_pods",
-                f"No running pods found for workload '{workloadName}'",
+                "service_not_found",
+                f"No matching service found for workload '{workloadName}'",
             )
 
-        pod_ip = pod.get("status", {}).get("podIP")
-        if not pod_ip:
-            raise_structured_error(404, "pod_ip_missing", "Pod IP not available for selected pod")
-        logger.info("Selected pod %s with IP %s", pod.get("metadata", {}).get("name"), pod_ip)
+        service_name = service.get("metadata", {}).get("name")
+        if not service_name:
+            raise_structured_error(500, "service_missing_name", "Matching service has no name")
 
-        port = detect_pod_port(pod)
+        port = resolve_service_port(service)
         if port is None:
-            try:
-                port = int(DEFAULT_SPRING_PORT)
-            except ValueError:
-                raise_structured_error(500, "port_not_detected", "Spring Boot port could not be detected")
-        logger.info("Resolved port %s", port)
+            raise_structured_error(500, "service_port_missing", "Matching service has no port")
+        logger.info("Using service %s on port %s", service_name, port)
 
-        actuator_url = f"http://{pod_ip}:{port}/actuator/health/env"
+        service_host = f"{service_name}.{namespace}.svc.cluster.local"
+        actuator_url = f"http://{service_host}:{port}/actuator/health/env"
         actuator_payload = fetch_actuator_env(actuator_url)
 
         return {
@@ -433,8 +459,8 @@ async def get_spring_config(namespace: str, workloadName: str):
             "workloadName": workloadName,
             "workloadKind": workload_kind,
             "labelSelector": label_selector,
-            "podName": pod.get("metadata", {}).get("name"),
-            "podIP": pod_ip,
+            "serviceName": service_name,
+            "serviceHost": service_host,
             "port": port,
             "actuatorUrl": actuator_url,
             "payload": actuator_payload,

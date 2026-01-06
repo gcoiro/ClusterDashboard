@@ -311,7 +311,11 @@ async function viewSpringConfig(namespace, workloadName, kindLabel) {
         };
 
         configTitle.textContent = `Spring Config Explorer`;
-        configMeta.textContent = `${data.workloadName} (${data.workloadKind}) | ${data.namespace} | Pod ${data.podName || 'unknown'} | ${data.podIP || 'n/a'}:${data.port || 'n/a'}`;
+        const locationLabel = data.serviceName
+            ? `Service ${data.serviceName}`
+            : `Pod ${data.podName || 'unknown'}`;
+        const hostLabel = data.serviceHost || data.podIP || 'n/a';
+        configMeta.textContent = `${data.workloadName} (${data.workloadKind}) | ${data.namespace} | ${locationLabel} | ${hostLabel}:${data.port || 'n/a'}`;
         setConfigStatus(`Loaded from ${data.actuatorUrl || 'actuator'}`, 'success');
 
         renderProfiles(activeProfiles);
