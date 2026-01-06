@@ -164,7 +164,14 @@ def get_workload_selector(workload: dict, fallback_labels: dict) -> str:
 def get_running_pod(namespace: str, label_selector: str):
     if not label_selector:
         return None
-    data = run_oc(["get", "pods", "-n", namespace, "-l", label_selector, "-o", "json"], expect_json=True)
+    try:
+        data = run_oc(["get", "pods", "-n", namespace, "-l", label_selector, "-o", "json"], expect_json=True)
+    except HTTPException as exc:
+        detail = getattr(exc, "detail", "")
+        if isinstance(detail, str) and is_missing_resource_error(detail, "pods"):
+            data = run_oc(["get", "pod", "-n", namespace, "-l", label_selector, "-o", "json"], expect_json=True)
+        else:
+            raise
     for item in data.get("items", []):
         status = item.get("status", {})
         if status.get("phase") == "Running" and not item.get("metadata", {}).get("deletionTimestamp"):
