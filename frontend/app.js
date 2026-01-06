@@ -11,6 +11,7 @@ const configTitle = document.getElementById('config-title');
 const configMeta = document.getElementById('config-meta');
 const configStatus = document.getElementById('config-status');
 const configSearch = document.getElementById('config-search');
+const configViewMode = document.getElementById('config-view-mode');
 const configProfiles = document.getElementById('config-profiles');
 const configContent = document.getElementById('config-content');
 const configClose = document.getElementById('config-close');
@@ -38,6 +39,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     configSearch.addEventListener('input', () => {
+        renderConfigSources();
+    });
+
+    configViewMode.addEventListener('change', () => {
         renderConfigSources();
     });
 });
@@ -185,6 +190,7 @@ function hideConfigPanel() {
     configContent.innerHTML = '';
     configProfiles.innerHTML = '';
     configSearch.value = '';
+    configViewMode.value = 'by-source';
     configStatus.textContent = '';
 }
 
@@ -236,6 +242,24 @@ function normalizePropertyValue(value) {
     return value && typeof value === 'object' && 'value' in value ? value.value : value;
 }
 
+function getSourceCategory(sourceName, workloadName) {
+    if (!sourceName) return { key: 'other', label: 'Other source' };
+
+    if (sourceName.includes('classpath:/bootstrap.yml')) {
+        return { key: 'bootstrap', label: 'bootstrap.yml' };
+    }
+
+    if (sourceName.startsWith('bootstrapProperties-') && sourceName.includes('/application.yml')) {
+        return { key: 'config-app', label: 'config application.yml' };
+    }
+
+    if (workloadName && sourceName.startsWith('bootstrapProperties-') && sourceName.includes(`/${workloadName}.yml`)) {
+        return { key: 'config-workload', label: `config ${workloadName}.yml` };
+    }
+
+    return { key: 'other', label: 'Other source' };
+}
+
 function buildEffectiveIndex(propertySources) {
     const sourceIndexByKey = {};
     const sourceNameByKey = {};
@@ -273,9 +297,25 @@ function renderConfigSources() {
 
     const searchTerm = configSearch.value.trim().toLowerCase();
     const sources = configState.propertySources || [];
+    const viewMode = configViewMode.value;
 
     if (sources.length === 0) {
         configContent.innerHTML = '<div class="config-empty">No property sources found.</div>';
+        return;
+    }
+
+    if (viewMode === 'effective') {
+        renderEffectiveConfig(searchTerm);
+        return;
+    }
+
+    if (viewMode === 'by-key') {
+        renderConfigByKey(searchTerm);
+        return;
+    }
+
+    if (viewMode === 'chain') {
+        renderConfigChain(searchTerm);
         return;
     }
 
@@ -324,6 +364,186 @@ function renderConfigSources() {
     }).join('');
 
     configContent.innerHTML = sourceHtml || '<div class="config-empty">No matching properties.</div>';
+}
+
+function renderEffectiveConfig(searchTerm) {
+    const effectiveKeys = Object.keys(configState.effectiveIndex.valueByKey);
+    const entries = effectiveKeys
+        .map(key => ({
+            key,
+            value: formatValue(configState.effectiveIndex.valueByKey[key]),
+            source: configState.effectiveIndex.sourceNameByKey[key],
+        }))
+        .filter(entry => {
+            if (!searchTerm) return true;
+            return entry.key.toLowerCase().includes(searchTerm)
+                || entry.value.toLowerCase().includes(searchTerm)
+                || entry.source.toLowerCase().includes(searchTerm);
+        })
+        .sort((a, b) => a.key.localeCompare(b.key));
+
+    if (entries.length === 0) {
+        configContent.innerHTML = '<div class="config-empty">No matching properties.</div>';
+        return;
+    }
+
+    const rows = entries.map(entry => `
+        <div class="config-row">
+            <div class="config-key">${escapeHtml(entry.key)}</div>
+            <div class="config-value">
+                ${escapeHtml(entry.value)}
+                <div class="config-value-meta">
+                    <span class="config-badge badge-effective">effective</span>
+                    <span class="config-source-label">${escapeHtml(entry.source)}</span>
+                </div>
+            </div>
+        </div>
+    `).join('');
+
+    configContent.innerHTML = `
+        <details class="config-source" open>
+            <summary>Effective configuration <span class="config-count">${entries.length}</span></summary>
+            <div class="config-rows">${rows}</div>
+        </details>
+    `;
+}
+
+function renderConfigByKey(searchTerm) {
+    const sources = configState.propertySources || [];
+    const keyMap = {};
+
+    sources.forEach((source, index) => {
+        const properties = source.properties || {};
+        const sourceName = source.name || 'propertySource';
+        Object.entries(properties).forEach(([key, value]) => {
+            if (!keyMap[key]) {
+                keyMap[key] = [];
+            }
+            keyMap[key].push({
+                sourceIndex: index,
+                sourceName,
+                value: formatValue(normalizePropertyValue(value)),
+            });
+        });
+    });
+
+    const keys = Object.keys(keyMap)
+        .filter(key => {
+            if (!searchTerm) return true;
+            const matchesKey = key.toLowerCase().includes(searchTerm);
+            const matchesValue = keyMap[key].some(entry =>
+                entry.value.toLowerCase().includes(searchTerm) || entry.sourceName.toLowerCase().includes(searchTerm)
+            );
+            return matchesKey || matchesValue;
+        })
+        .sort((a, b) => a.localeCompare(b));
+
+    if (keys.length === 0) {
+        configContent.innerHTML = '<div class="config-empty">No matching properties.</div>';
+        return;
+    }
+
+    const html = keys.map(key => {
+        const stack = keyMap[key];
+        const effectiveSource = configState.effectiveIndex.sourceNameByKey[key];
+        const rows = stack.map(entry => {
+            const isEffective = entry.sourceIndex === configState.effectiveIndex.sourceIndexByKey[key];
+            const meta = isEffective
+                ? `<div class="config-value-meta"><span class="config-badge badge-effective">effective</span><span class="config-source-label">${escapeHtml(entry.sourceName)}</span></div>`
+                : `<div class="config-value-meta"><span class="config-badge badge-overridden">overridden</span><span class="config-source-label">by ${escapeHtml(effectiveSource)}</span></div>`;
+            return `
+                <div class="config-row">
+                    <div class="config-key">${escapeHtml(entry.sourceName)}</div>
+                    <div class="config-value">
+                        ${escapeHtml(entry.value)}
+                        ${meta}
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        return `
+            <details class="config-source">
+                <summary>${escapeHtml(key)} <span class="config-count">${stack.length}</span></summary>
+                <div class="config-rows">${rows}</div>
+            </details>
+        `;
+    }).join('');
+
+    configContent.innerHTML = html;
+}
+
+function renderConfigChain(searchTerm) {
+    const sources = configState.propertySources || [];
+    const workloadName = configState.workloadName;
+    const chainOrder = ['bootstrap', 'config-app', 'config-workload'];
+    const sections = chainOrder.map(chainKey => {
+        const matchingSources = sources
+            .map((source, index) => ({ source, index }))
+            .filter(item => getSourceCategory(item.source.name || '', workloadName).key === chainKey);
+
+        if (matchingSources.length === 0) {
+            return '';
+        }
+
+        const label = getSourceCategory(matchingSources[0].source.name || '', workloadName).label;
+        const sourceBlocks = matchingSources.map(({ source, index }) => {
+            const properties = source.properties || {};
+            const entries = Object.entries(properties)
+                .map(([key, value]) => {
+                    const propertyValue = normalizePropertyValue(value);
+                    return { key, value: formatValue(propertyValue) };
+                })
+                .filter(entry => {
+                    if (!searchTerm) return true;
+                    return entry.key.toLowerCase().includes(searchTerm)
+                        || entry.value.toLowerCase().includes(searchTerm);
+                });
+
+            if (entries.length === 0) {
+                return '';
+            }
+
+            const rows = entries.map(entry => {
+                const effectiveIndex = configState.effectiveIndex.sourceIndexByKey[entry.key];
+                const effectiveSource = configState.effectiveIndex.sourceNameByKey[entry.key];
+                const isEffective = effectiveIndex === index;
+                const meta = isEffective
+                    ? `<div class="config-value-meta"><span class="config-badge badge-effective">effective</span><span class="config-source-label">${escapeHtml(effectiveSource)}</span></div>`
+                    : `<div class="config-value-meta"><span class="config-badge badge-overridden">overridden</span><span class="config-source-label">by ${escapeHtml(effectiveSource)}</span></div>`;
+
+                return `
+                    <div class="config-row">
+                        <div class="config-key">${escapeHtml(entry.key)}</div>
+                        <div class="config-value">
+                            ${escapeHtml(entry.value)}
+                            ${meta}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            return `
+                <details class="config-source" open>
+                    <summary>${escapeHtml(source.name || label)} <span class="config-count">${entries.length}</span></summary>
+                    <div class="config-rows">${rows}</div>
+                </details>
+            `;
+        }).join('');
+
+        if (!sourceBlocks) {
+            return '';
+        }
+
+        return `
+            <details class="config-source" open>
+                <summary>${escapeHtml(label)}</summary>
+                <div class="config-rows">${sourceBlocks}</div>
+            </details>
+        `;
+    }).join('');
+
+    configContent.innerHTML = sections || '<div class="config-empty">No matching properties in the config chain.</div>';
 }
 
 async function viewSpringConfig(namespace, workloadName, kindLabel) {

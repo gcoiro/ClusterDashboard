@@ -176,6 +176,20 @@ header h1 {
     border-color: #667eea;
 }
 
+.config-filter {
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: 2px solid #e0e0e0;
+    background: white;
+    font-size: 0.9em;
+    min-width: 240px;
+}
+
+.config-filter:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
 .config-profiles {
     display: flex;
     flex-wrap: wrap;
