@@ -198,6 +198,13 @@ function extractEnvDetails(payload) {
         return { propertySources: [], activeProfiles: [] };
     }
 
+    if (payload.propertySources) {
+        return {
+            propertySources: payload.propertySources,
+            activeProfiles: payload.activeProfiles || [],
+        };
+    }
+
     if (payload.details && payload.details.propertySources) {
         return {
             propertySources: payload.details.propertySources,
