@@ -176,6 +176,20 @@ header h1 {
     border-color: #667eea;
 }
 
+.config-filter {
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: 2px solid #e0e0e0;
+    background: white;
+    font-size: 0.9em;
+    min-width: 220px;
+}
+
+.config-filter:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
 .config-profiles {
     display: flex;
     flex-wrap: wrap;
@@ -252,6 +266,37 @@ header h1 {
 .config-value {
     color: #546e7a;
     word-break: break-word;
+}
+
+.config-value-meta {
+    margin-top: 4px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 0.8em;
+    color: #78909c;
+}
+
+.config-badge {
+    padding: 2px 6px;
+    border-radius: 999px;
+    font-size: 0.75em;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.badge-effective {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.badge-overridden {
+    background: #fff8e1;
+    color: #ef6c00;
+}
+
+.config-source-label {
+    color: #546e7a;
 }
 
 .config-empty {
