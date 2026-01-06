@@ -6,7 +6,9 @@ import subprocess
 import os
 import urllib.request
 import urllib.error
+import urllib.parse
 from dotenv import load_dotenv
+import logging
 
 load_dotenv()
 
@@ -23,6 +25,12 @@ app.add_middleware(
 KUBERNETES_API_SERVER = os.getenv("KUBERNETES_API_SERVER", "https://kubernetes.default.svc")
 KUBERNETES_TOKEN = os.getenv("KUBERNETES_TOKEN", "")
 DEFAULT_SPRING_PORT = os.getenv("DEFAULT_SPRING_PORT", "9150")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger("openshift-dashboard")
 if not KUBERNETES_TOKEN:
     token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
     if os.path.exists(token_file):
@@ -42,6 +50,7 @@ def oc_base_args():
 
 
 def run_oc(args, expect_json=False):
+    logger.debug("oc %s", " ".join(args))
     result = subprocess.run(
         oc_base_args() + args,
         capture_output=True,
@@ -50,12 +59,36 @@ def run_oc(args, expect_json=False):
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
+        logger.error("oc error (%s): %s", " ".join(args), detail)
         status = 403 if "forbidden" in detail.lower() else 500
         raise HTTPException(status_code=status, detail=f"oc error: {detail}")
     if expect_json:
         try:
             return json.loads(result.stdout)
         except json.JSONDecodeError as exc:
+            logger.error("oc json parse error (%s): %s", " ".join(args), str(exc))
+            raise HTTPException(status_code=500, detail=f"oc output parse error: {str(exc)}")
+    return result.stdout
+
+
+def run_oc_raw(path: str, expect_json=False):
+    logger.debug("oc get --raw %s", path)
+    result = subprocess.run(
+        oc_base_args() + ["get", "--raw", path],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        logger.error("oc raw error (%s): %s", path, detail)
+        status = 403 if "forbidden" in detail.lower() else 500
+        raise HTTPException(status_code=status, detail=f"oc error: {detail}")
+    if expect_json:
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            logger.error("oc raw json parse error (%s): %s", path, str(exc))
             raise HTTPException(status_code=500, detail=f"oc output parse error: {str(exc)}")
     return result.stdout
 
@@ -121,6 +154,7 @@ def build_label_selector(selector) -> str:
 
 
 def get_workload(namespace: str, name: str):
+    logger.info("Resolving workload %s in namespace %s", name, namespace)
     try:
         deployment = run_oc(["get", "deployment", name, "-n", namespace, "-o", "json"], expect_json=True)
         return "deployment", deployment
@@ -164,12 +198,23 @@ def get_workload_selector(workload: dict, fallback_labels: dict) -> str:
 def get_running_pod(namespace: str, label_selector: str):
     if not label_selector:
         return None
+    logger.info("Finding running pod in %s with selector %s", namespace, label_selector)
     try:
         data = run_oc(["get", "pods", "-n", namespace, "-l", label_selector, "-o", "json"], expect_json=True)
     except HTTPException as exc:
         detail = getattr(exc, "detail", "")
         if isinstance(detail, str) and is_missing_resource_error(detail, "pods"):
-            data = run_oc(["get", "pod", "-n", namespace, "-l", label_selector, "-o", "json"], expect_json=True)
+            logger.warning("pods resource missing, falling back to pod")
+            try:
+                data = run_oc(["get", "pod", "-n", namespace, "-l", label_selector, "-o", "json"], expect_json=True)
+            except HTTPException as inner_exc:
+                inner_detail = getattr(inner_exc, "detail", "")
+                if isinstance(inner_detail, str) and is_missing_resource_error(inner_detail, "pod"):
+                    logger.warning("pod resource missing, falling back to raw API")
+                    query = urllib.parse.urlencode({"labelSelector": label_selector})
+                    data = run_oc_raw(f"/api/v1/namespaces/{namespace}/pods?{query}", expect_json=True)
+                else:
+                    raise
         else:
             raise
     for item in data.get("items", []):
@@ -185,12 +230,14 @@ def detect_pod_port(pod: dict):
         for port_entry in container.get("ports", []) or []:
             container_port = port_entry.get("containerPort")
             if isinstance(container_port, int) and container_port > 0:
+                logger.info("Detected containerPort %s", container_port)
                 return container_port
 
     for container in containers:
         for env in container.get("env", []) or []:
             if env.get("name") == "SERVER_PORT" and env.get("value"):
                 try:
+                    logger.info("Detected SERVER_PORT %s", env["value"])
                     return int(env["value"])
                 except ValueError:
                     continue
@@ -198,6 +245,7 @@ def detect_pod_port(pod: dict):
 
 
 def fetch_actuator_env(url: str):
+    logger.info("Fetching actuator env %s", url)
     try:
         request = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(request, timeout=10) as response:
@@ -205,6 +253,7 @@ def fetch_actuator_env(url: str):
             payload = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8") if exc.fp else ""
+        logger.error("Actuator HTTP error %s: %s", exc.code, detail)
         raise_structured_error(
             502,
             "actuator_non_200",
@@ -212,9 +261,11 @@ def fetch_actuator_env(url: str):
             {"status": exc.code, "body": detail},
         )
     except urllib.error.URLError as exc:
+        logger.error("Actuator unreachable: %s", exc.reason)
         raise_structured_error(502, "actuator_unreachable", f"Actuator endpoint not reachable: {exc.reason}")
 
     if status_code != 200:
+        logger.error("Actuator non-200 %s", status_code)
         raise_structured_error(
             502,
             "actuator_non_200",
@@ -225,6 +276,7 @@ def fetch_actuator_env(url: str):
     try:
         return json.loads(payload)
     except json.JSONDecodeError as exc:
+        logger.error("Actuator JSON parse error: %s", str(exc))
         raise_structured_error(502, "actuator_invalid_json", f"Actuator returned invalid JSON: {str(exc)}")
 
 
@@ -327,6 +379,7 @@ async def scale_deploymentconfig(namespace: str, name: str, request: ScaleReques
 @app.get("/api/config/{namespace}/{workloadName}")
 async def get_spring_config(namespace: str, workloadName: str):
     try:
+        logger.info("GET /api/config/%s/%s", namespace, workloadName)
         workload_kind, workload = get_workload(namespace, workloadName)
         if not workload:
             raise_structured_error(
@@ -345,6 +398,7 @@ async def get_spring_config(namespace: str, workloadName: str):
                 "no_label_selector",
                 f"No label selector found for workload '{workloadName}'",
             )
+        logger.info("Using label selector %s", label_selector)
 
         pod = get_running_pod(namespace, label_selector)
         if not pod:
@@ -357,6 +411,7 @@ async def get_spring_config(namespace: str, workloadName: str):
         pod_ip = pod.get("status", {}).get("podIP")
         if not pod_ip:
             raise_structured_error(404, "pod_ip_missing", "Pod IP not available for selected pod")
+        logger.info("Selected pod %s with IP %s", pod.get("metadata", {}).get("name"), pod_ip)
 
         port = detect_pod_port(pod)
         if port is None:
@@ -364,6 +419,7 @@ async def get_spring_config(namespace: str, workloadName: str):
                 port = int(DEFAULT_SPRING_PORT)
             except ValueError:
                 raise_structured_error(500, "port_not_detected", "Spring Boot port could not be detected")
+        logger.info("Resolved port %s", port)
 
         actuator_url = f"http://{pod_ip}:{port}/actuator/health/env"
         actuator_payload = fetch_actuator_env(actuator_url)
