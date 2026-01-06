@@ -11,7 +11,6 @@ const configTitle = document.getElementById('config-title');
 const configMeta = document.getElementById('config-meta');
 const configStatus = document.getElementById('config-status');
 const configSearch = document.getElementById('config-search');
-const configSourceFilter = document.getElementById('config-source-filter');
 const configProfiles = document.getElementById('config-profiles');
 const configContent = document.getElementById('config-content');
 const configClose = document.getElementById('config-close');
@@ -39,10 +38,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     configSearch.addEventListener('input', () => {
-        renderConfigSources();
-    });
-
-    configSourceFilter.addEventListener('change', () => {
         renderConfigSources();
     });
 });
@@ -190,7 +185,6 @@ function hideConfigPanel() {
     configContent.innerHTML = '';
     configProfiles.innerHTML = '';
     configSearch.value = '';
-    configSourceFilter.value = 'all';
     configStatus.textContent = '';
 }
 
@@ -253,43 +247,6 @@ function buildEffectiveIndex(propertySources) {
     return { sourceIndexByKey, sourceNameByKey, valueByKey };
 }
 
-function buildConfigFilters(propertySources, workloadName) {
-    const filters = [
-        { value: 'all', label: 'All sources' },
-        { value: 'effective', label: 'Effective (final values)' },
-    ];
-
-    const hasBootstrap = propertySources.some(source => (source.name || '').includes('classpath:/bootstrap.yml'));
-    if (hasBootstrap) {
-        filters.push({ value: 'bootstrap', label: 'bootstrap.yml' });
-    }
-
-    const hasConfigApp = propertySources.some(source => {
-        const name = source.name || '';
-        return name.startsWith('bootstrapProperties-') && name.includes('/application.yml');
-    });
-    if (hasConfigApp) {
-        filters.push({ value: 'config-app', label: 'config application.yml' });
-    }
-
-    const workloadLabel = workloadName ? `config ${workloadName}.yml` : 'config workload.yml';
-    const hasWorkloadConfig = workloadName && propertySources.some(source => {
-        const name = source.name || '';
-        return name.startsWith('bootstrapProperties-') && name.includes(`/${workloadName}.yml`);
-    });
-    if (hasWorkloadConfig) {
-        filters.push({ value: 'config-workload', label: workloadLabel });
-    }
-
-    const currentValue = configSourceFilter.value;
-    configSourceFilter.innerHTML = filters
-        .map(filter => `<option value="${filter.value}">${filter.label}</option>`)
-        .join('');
-
-    const stillValid = filters.some(filter => filter.value === currentValue);
-    configSourceFilter.value = stillValid ? currentValue : 'all';
-}
-
 function renderProfiles(activeProfiles) {
     if (!activeProfiles || activeProfiles.length === 0) {
         configProfiles.innerHTML = '<span class="profile-chip profile-empty">No active profiles</span>';
@@ -309,37 +266,13 @@ function renderConfigSources() {
 
     const searchTerm = configSearch.value.trim().toLowerCase();
     const sources = configState.propertySources || [];
-    const filterValue = configSourceFilter.value;
 
     if (sources.length === 0) {
         configContent.innerHTML = '<div class="config-empty">No property sources found.</div>';
         return;
     }
 
-    if (filterValue === 'effective') {
-        renderEffectiveConfig(searchTerm);
-        return;
-    }
-
     const sourceHtml = sources.map((source, index) => {
-        if (filterValue === 'bootstrap') {
-            const name = source.name || '';
-            if (!name.includes('classpath:/bootstrap.yml')) return '';
-        }
-
-        if (filterValue === 'config-app') {
-            const name = source.name || '';
-            if (!name.startsWith('bootstrapProperties-') || !name.includes('/application.yml')) return '';
-        }
-
-        if (filterValue === 'config-workload') {
-            const name = source.name || '';
-            const workloadName = configState.workloadName;
-            if (!workloadName || !name.startsWith('bootstrapProperties-') || !name.includes(`/${workloadName}.yml`)) {
-                return '';
-            }
-        }
-
         const properties = source.properties || {};
         const entries = Object.entries(properties)
             .map(([key, value]) => {
@@ -386,48 +319,6 @@ function renderConfigSources() {
     configContent.innerHTML = sourceHtml || '<div class="config-empty">No matching properties.</div>';
 }
 
-function renderEffectiveConfig(searchTerm) {
-    const effectiveKeys = Object.keys(configState.effectiveIndex.valueByKey);
-    const entries = effectiveKeys
-        .map(key => ({
-            key,
-            value: formatValue(configState.effectiveIndex.valueByKey[key]),
-            source: configState.effectiveIndex.sourceNameByKey[key],
-        }))
-        .filter(entry => {
-            if (!searchTerm) return true;
-            return entry.key.toLowerCase().includes(searchTerm)
-                || entry.value.toLowerCase().includes(searchTerm)
-                || entry.source.toLowerCase().includes(searchTerm);
-        })
-        .sort((a, b) => a.key.localeCompare(b.key));
-
-    if (entries.length === 0) {
-        configContent.innerHTML = '<div class="config-empty">No matching properties.</div>';
-        return;
-    }
-
-    const rows = entries.map(entry => `
-        <div class="config-row">
-            <div class="config-key">${escapeHtml(entry.key)}</div>
-            <div class="config-value">
-                ${escapeHtml(entry.value)}
-                <div class="config-value-meta">
-                    <span class="config-badge badge-effective">effective</span>
-                    <span class="config-source-label">${escapeHtml(entry.source)}</span>
-                </div>
-            </div>
-        </div>
-    `).join('');
-
-    configContent.innerHTML = `
-        <details class="config-source" open>
-            <summary>Effective configuration <span class="config-count">${entries.length}</span></summary>
-            <div class="config-rows">${rows}</div>
-        </details>
-    `;
-}
-
 async function viewSpringConfig(namespace, workloadName, kindLabel) {
     showConfigPanel();
     configTitle.textContent = `Spring Config Explorer`;
@@ -464,7 +355,6 @@ async function viewSpringConfig(namespace, workloadName, kindLabel) {
         setConfigStatus(`Loaded from ${data.actuatorUrl || 'actuator'} (higher precedence first)`, 'success');
 
         renderProfiles(activeProfiles);
-        buildConfigFilters(propertySources, data.workloadName);
         renderConfigSources();
     } catch (error) {
         console.error('Error loading spring config:', error);
