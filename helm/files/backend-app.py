@@ -126,7 +126,11 @@ def get_workload(namespace: str, name: str):
         return "deployment", deployment
     except HTTPException as exc:
         detail = getattr(exc, "detail", "")
-        if isinstance(detail, str) and is_not_found_error(detail):
+        if isinstance(detail, str) and (
+            is_not_found_error(detail)
+            or is_missing_resource_error(detail, "deployment")
+            or is_missing_resource_error(detail, "deployments")
+        ):
             pass
         else:
             raise
@@ -139,7 +143,9 @@ def get_workload(namespace: str, name: str):
     except HTTPException as exc:
         detail = getattr(exc, "detail", "")
         if isinstance(detail, str) and (
-            is_not_found_error(detail) or is_missing_resource_error(detail, "deploymentconfigs")
+            is_not_found_error(detail)
+            or is_missing_resource_error(detail, "deploymentconfigs")
+            or is_missing_resource_error(detail, "deploymentconfig")
         ):
             return None, None
         raise
@@ -252,7 +258,9 @@ async def get_deployments(namespace: str):
         return [normalize_workload(item, "deployment") for item in data.get("items", [])]
     except HTTPException as exc:
         detail = getattr(exc, "detail", "")
-        if isinstance(detail, str) and is_missing_resource_error(detail, "deployments"):
+        if isinstance(detail, str) and (
+            is_missing_resource_error(detail, "deployments") or is_missing_resource_error(detail, "deployment")
+        ):
             return []
         raise
     except Exception as exc:

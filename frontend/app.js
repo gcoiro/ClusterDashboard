@@ -158,7 +158,7 @@ function renderWorkloads() {
             <div class="scale-input-group">
                 <input 
                     type="number" 
-                    class="scale-input" 
+                    class="scale-input"  
                     id="scale-${workload.namespace}-${workload.name}" 
                     value="${workload.replicas}" 
                     min="0"
