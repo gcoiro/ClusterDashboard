@@ -57,6 +57,16 @@ def run_oc(args, expect_json=False):
     return result.stdout
 
 
+def is_missing_resource_error(detail: str, resource: str) -> bool:
+    if not detail:
+        return False
+    detail_lower = detail.lower()
+    resource_lower = resource.lower()
+    return f'resource type "{resource_lower}"' in detail_lower or (
+        "resource type" in detail_lower and resource_lower in detail_lower
+    )
+
+
 def normalize_workload(item, kind_label):
     return {
         "name": item.get("metadata", {}).get("name"),
@@ -92,7 +102,10 @@ async def get_deployments(namespace: str):
     try:
         data = run_oc(["get", "deployments", "-n", namespace, "-o", "json"], expect_json=True)
         return [normalize_workload(item, "deployment") for item in data.get("items", [])]
-    except HTTPException:
+    except HTTPException as exc:
+        detail = getattr(exc, "detail", "")
+        if isinstance(detail, str) and is_missing_resource_error(detail, "deployments"):
+            return []
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch deployments: {str(exc)}")
@@ -103,7 +116,10 @@ async def get_deploymentconfigs(namespace: str):
     try:
         data = run_oc(["get", "deploymentconfigs", "-n", namespace, "-o", "json"], expect_json=True)
         return [normalize_workload(item, "deploymentconfig") for item in data.get("items", [])]
-    except HTTPException:
+    except HTTPException as exc:
+        detail = getattr(exc, "detail", "")
+        if isinstance(detail, str) and is_missing_resource_error(detail, "deploymentconfigs"):
+            return []
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to fetch deploymentconfigs: {str(exc)}")
