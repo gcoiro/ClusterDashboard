@@ -138,6 +138,13 @@ header h1 {
     margin-bottom: 10px;
 }
 
+.report-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
 .report-meta {
     font-size: 0.95em;
     color: #546e7a;
@@ -226,6 +233,12 @@ header h1 {
     justify-content: space-between;
     align-items: center;
     gap: 10px;
+}
+
+.report-summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
 }
 
 .report-keys {

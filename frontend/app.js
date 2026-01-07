@@ -16,6 +16,7 @@ const configProfiles = document.getElementById('config-profiles');
 const configContent = document.getElementById('config-content');
 const configClose = document.getElementById('config-close');
 const reportRun = document.getElementById('report-run');
+const reportDownload = document.getElementById('report-download');
 const reportPattern = document.getElementById('report-pattern');
 const reportScope = document.getElementById('report-scope');
 const reportCase = document.getElementById('report-case');
@@ -54,6 +55,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     reportRun.addEventListener('click', () => {
         runSpringConfigReport();
+    });
+
+    reportDownload.addEventListener('click', () => {
+        downloadSpringConfigReport();
     });
 
     reportPattern.addEventListener('keydown', (event) => {
@@ -233,6 +238,10 @@ function renderReportResults(data) {
     } else {
         reportResults.innerHTML = matches.map(item => {
             const keys = item.matches || [];
+            const kind = item.workloadKind || 'workload';
+            const isDc = kind.toLowerCase() === 'deploymentconfig';
+            const kindLabel = isDc ? 'DC' : 'Deployment';
+            const kindClass = isDc ? 'type-dc' : 'type-deployment';
             const keyHtml = keys.map(keyEntry => {
                 const valueText = keyEntry.value || '';
                 const highlightedValue = highlightMatches(valueText, highlightPattern, highlightCaseInsensitive);
@@ -248,7 +257,10 @@ function renderReportResults(data) {
             return `
                 <details class="report-card" open>
                     <summary>
-                        ${escapeHtml(item.workloadName)} (${escapeHtml(item.workloadKind || 'workload')})
+                        <span class="report-summary">
+                            ${escapeHtml(item.workloadName)}
+                            <span class="type-badge ${kindClass}">${escapeHtml(kindLabel)}</span>
+                        </span>
                         <span class="config-count">${keys.length}</span>
                     </summary>
                     <div class="report-keys">${keyHtml}</div>
@@ -337,6 +349,50 @@ async function runSpringConfigReport() {
         console.error('Error running config report:', error);
         setReportStatus(`Error: ${error.message}`, 'error');
         reportResults.innerHTML = '';
+    }
+}
+
+async function downloadSpringConfigReport() {
+    const pattern = reportPattern.value.trim();
+    if (!currentNamespace) {
+        setReportStatus('Select a namespace first.', 'error');
+        return;
+    }
+    if (!pattern) {
+        setReportStatus('Enter a regex pattern to search.', 'error');
+        return;
+    }
+
+    const caseInsensitive = reportCase.checked;
+    const searchIn = reportScope.value || 'value';
+    const query = new URLSearchParams({
+        pattern,
+        caseInsensitive: caseInsensitive ? 'true' : 'false',
+        searchIn,
+    });
+
+    setReportStatus('Preparing CSV download...', 'info');
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/config/${currentNamespace}/report.csv?${query.toString()}`);
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.detail || 'Failed to download report');
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `spring-config-report-${currentNamespace}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        setReportStatus('CSV downloaded.', 'success');
+    } catch (error) {
+        console.error('Error downloading config report:', error);
+        setReportStatus(`Error: ${error.message}`, 'error');
     }
 }
 

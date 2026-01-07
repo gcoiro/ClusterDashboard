@@ -1,7 +1,9 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import json
+import csv
+import io
 import subprocess
 import os
 import urllib.request
@@ -500,23 +502,27 @@ async def get_spring_config_report(
     namespace: str,
     pattern: str,
     caseInsensitive: bool = False,
-    searchIn: str = "key",
+    searchIn: str = "value",
 ):
+    return build_config_report(namespace, pattern, caseInsensitive, searchIn)
+
+
+def build_config_report(namespace: str, pattern: str, case_insensitive: bool, search_in: str):
     try:
         logger.info(
             "Config report request namespace=%s pattern=%s caseInsensitive=%s searchIn=%s",
             namespace,
             pattern,
-            caseInsensitive,
-            searchIn,
+            case_insensitive,
+            search_in,
         )
         if not pattern:
             raise HTTPException(status_code=400, detail="pattern query parameter is required")
-        search_in = (searchIn or "value").lower()
+        search_in = (search_in or "value").lower()
         if search_in != "value":
             raise HTTPException(status_code=400, detail="searchIn must be: value")
         try:
-            flags = re.IGNORECASE if caseInsensitive else 0
+            flags = re.IGNORECASE if case_insensitive else 0
             regex = re.compile(pattern, flags=flags)
         except re.error as exc:
             raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {str(exc)}")
@@ -573,28 +579,16 @@ async def get_spring_config_report(
 
                 matched_keys = []
                 for key, entry in effective_entries.items():
-                    matches_key = regex.search(key) is not None
                     value_text = stringify_property_value(entry.get("value"))
                     matches_value = regex.search(value_text) is not None
 
-                    if search_in == "key" and not matches_key:
-                        continue
                     if search_in == "value" and not matches_value:
                         continue
-                    if search_in == "both" and not (matches_key or matches_value):
-                        continue
-
-                    if matches_key and matches_value:
-                        match_on = "both"
-                    elif matches_key:
-                        match_on = "key"
-                    else:
-                        match_on = "value"
 
                     matched_keys.append({
                         "key": key,
                         "source": entry.get("source"),
-                        "matchOn": match_on,
+                        "matchOn": "value",
                         "value": stringify_property_value(entry.get("value")),
                     })
 
@@ -636,7 +630,7 @@ async def get_spring_config_report(
         return {
             "namespace": namespace,
             "pattern": pattern,
-            "caseInsensitive": caseInsensitive,
+            "caseInsensitive": case_insensitive,
             "searchIn": search_in,
             "totalWorkloads": len(workloads),
             "matched": matched,
@@ -646,6 +640,37 @@ async def get_spring_config_report(
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to build config report: {str(exc)}")
+
+
+@app.get("/api/config/{namespace}/report.csv")
+async def get_spring_config_report_csv(
+    namespace: str,
+    pattern: str,
+    caseInsensitive: bool = False,
+    searchIn: str = "value",
+):
+    report = build_config_report(namespace, pattern, caseInsensitive, searchIn)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["workloadName", "workloadKind", "key", "value", "source", "matchOn"])
+
+    for workload in report.get("matched", []):
+        for match in workload.get("matches", []):
+            writer.writerow([
+                workload.get("workloadName"),
+                workload.get("workloadKind"),
+                match.get("key"),
+                match.get("value"),
+                match.get("source"),
+                match.get("matchOn"),
+            ])
+
+    filename = f"spring-config-report-{namespace}.csv"
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/config/{namespace}/{workloadName}")

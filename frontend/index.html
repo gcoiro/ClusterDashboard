@@ -29,10 +29,13 @@
                     <h2>Spring Config Report</h2>
                     <div class="report-meta">Search effective keys across Spring apps in the selected namespace.</div>
                 </div>
-                <button id="report-run" class="btn btn-primary">Run report</button>
+                <div class="report-actions">
+                    <button id="report-run" class="btn btn-primary">Run report</button>
+                    <button id="report-download" class="btn btn-secondary">Download report</button>
+                </div>
             </div>
             <div class="report-toolbar">
-                <input id="report-pattern" class="report-input" type="search" placeholder="Regex pattern (e.g. .*cl.bsch.*)">
+                <input id="report-pattern" class="report-input" type="search" placeholder="Regular Expression Only">
                 <select id="report-scope" class="report-filter">
                     <option value="value">Values only</option>
                 </select>
