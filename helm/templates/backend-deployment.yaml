@@ -50,6 +50,8 @@ spec:
               key: namespace
         - name: PORT
           value: {{ .Values.backend.containerPort | quote }}
+        - name: CONFIG_REPORT_CONCURRENCY
+          value: {{ .Values.backend.configReportConcurrency | quote }}
         volumeMounts:
         - name: backend-app
           mountPath: /tmp/app.py

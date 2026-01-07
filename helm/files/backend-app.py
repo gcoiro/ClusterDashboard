@@ -10,6 +10,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import re
+import asyncio
 from dotenv import load_dotenv
 import logging
 
@@ -29,6 +30,12 @@ KUBERNETES_API_SERVER = os.getenv("KUBERNETES_API_SERVER", "https://kubernetes.d
 KUBERNETES_TOKEN = os.getenv("KUBERNETES_TOKEN", "")
 DEFAULT_SPRING_PORT = os.getenv("DEFAULT_SPRING_PORT", "9150")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+try:
+    CONFIG_REPORT_CONCURRENCY = int(os.getenv("CONFIG_REPORT_CONCURRENCY", "6"))
+except ValueError:
+    CONFIG_REPORT_CONCURRENCY = 6
+if CONFIG_REPORT_CONCURRENCY < 1:
+    CONFIG_REPORT_CONCURRENCY = 1
 logging.basicConfig(
     level=LOG_LEVEL,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -504,10 +511,102 @@ async def get_spring_config_report(
     caseInsensitive: bool = False,
     searchIn: str = "value",
 ):
-    return build_config_report(namespace, pattern, caseInsensitive, searchIn)
+    return await build_config_report(namespace, pattern, caseInsensitive, searchIn)
 
 
-def build_config_report(namespace: str, pattern: str, case_insensitive: bool, search_in: str):
+def process_report_workload(namespace: str, workload: dict, regex, search_in: str):
+    workload_name = workload.get("name")
+    workload_kind = workload.get("kind")
+    if not workload_name:
+        return None, None
+    logger.info("Config report workload=%s kind=%s", workload_name, workload_kind)
+
+    try:
+        service = get_service_by_name(namespace, workload_name)
+        if not service:
+            logger.warning("Config report skip=%s reason=service_not_found", workload_name)
+            return None, {
+                "workloadName": workload_name,
+                "workloadKind": workload_kind,
+                "message": "No matching service found",
+            }
+
+        port = resolve_service_port(service)
+        if port is None:
+            logger.warning("Config report skip=%s reason=service_port_missing", workload_name)
+            return None, {
+                "workloadName": workload_name,
+                "workloadKind": workload_kind,
+                "message": "Matching service has no port",
+            }
+
+        service_name = service.get("metadata", {}).get("name") or workload_name
+        service_host = f"{service_name}.{namespace}.svc.cluster.local"
+        actuator_url = f"http://{service_host}:{port}/actuator/env"
+        logger.info("Config report actuator=%s", actuator_url)
+        actuator_payload = fetch_actuator_env(actuator_url)
+
+        property_sources, _ = extract_env_details(actuator_payload)
+        effective_entries = build_effective_entries(property_sources)
+        logger.info(
+            "Config report workload=%s propertySources=%s effectiveKeys=%s",
+            workload_name,
+            len(property_sources),
+            len(effective_entries),
+        )
+
+        matched_keys = []
+        for key, entry in effective_entries.items():
+            value_text = stringify_property_value(entry.get("value"))
+            matches_value = regex.search(value_text) is not None
+
+            if search_in == "value" and not matches_value:
+                continue
+
+            matched_keys.append({
+                "key": key,
+                "source": entry.get("source"),
+                "matchOn": "value",
+                "value": stringify_property_value(entry.get("value")),
+            })
+
+        logger.info(
+            "Config report workload=%s matchedKeys=%s",
+            workload_name,
+            len(matched_keys),
+        )
+
+        if matched_keys:
+            matched_keys.sort(key=lambda item: item["key"])
+            return {
+                "workloadName": workload_name,
+                "workloadKind": workload_kind,
+                "serviceName": service_name,
+                "matches": matched_keys,
+            }, None
+        return None, None
+    except HTTPException as exc:
+        detail = getattr(exc, "detail", "")
+        logger.warning(
+            "Config report workload=%s error=%s",
+            workload_name,
+            detail if isinstance(detail, str) else "HTTPException",
+        )
+        return None, {
+            "workloadName": workload_name,
+            "workloadKind": workload_kind,
+            "message": detail if isinstance(detail, str) else "Failed to fetch actuator env",
+        }
+    except Exception as exc:
+        logger.exception("Config report workload=%s unexpected_error", workload_name)
+        return None, {
+            "workloadName": workload_name,
+            "workloadKind": workload_kind,
+            "message": str(exc),
+        }
+
+
+async def build_config_report(namespace: str, pattern: str, case_insensitive: bool, search_in: str):
     try:
         logger.info(
             "Config report request namespace=%s pattern=%s caseInsensitive=%s searchIn=%s",
@@ -527,104 +626,26 @@ def build_config_report(namespace: str, pattern: str, case_insensitive: bool, se
         except re.error as exc:
             raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {str(exc)}")
 
-        workloads = list_workloads(namespace)
+        workloads = await asyncio.to_thread(list_workloads, namespace)
         workloads.sort(key=lambda item: item.get("name") or "")
         logger.info("Config report workloads=%s", len(workloads))
 
         matched = []
         errors = []
+        sem = asyncio.Semaphore(CONFIG_REPORT_CONCURRENCY)
 
-        for workload in workloads:
-            workload_name = workload.get("name")
-            workload_kind = workload.get("kind")
-            if not workload_name:
-                continue
-            logger.info("Config report workload=%s kind=%s", workload_name, workload_kind)
+        async def run_workload(workload: dict):
+            async with sem:
+                return await asyncio.to_thread(process_report_workload, namespace, workload, regex, search_in)
 
-            try:
-                service = get_service_by_name(namespace, workload_name)
-                if not service:
-                    logger.warning("Config report skip=%s reason=service_not_found", workload_name)
-                    errors.append({
-                        "workloadName": workload_name,
-                        "workloadKind": workload_kind,
-                        "message": "No matching service found",
-                    })
-                    continue
+        tasks = [run_workload(workload) for workload in workloads if workload.get("name")]
+        results = await asyncio.gather(*tasks)
 
-                port = resolve_service_port(service)
-                if port is None:
-                    logger.warning("Config report skip=%s reason=service_port_missing", workload_name)
-                    errors.append({
-                        "workloadName": workload_name,
-                        "workloadKind": workload_kind,
-                        "message": "Matching service has no port",
-                    })
-                    continue
-
-                service_name = service.get("metadata", {}).get("name") or workload_name
-                service_host = f"{service_name}.{namespace}.svc.cluster.local"
-                actuator_url = f"http://{service_host}:{port}/actuator/env"
-                logger.info("Config report actuator=%s", actuator_url)
-                actuator_payload = fetch_actuator_env(actuator_url)
-
-                property_sources, _ = extract_env_details(actuator_payload)
-                effective_entries = build_effective_entries(property_sources)
-                logger.info(
-                    "Config report workload=%s propertySources=%s effectiveKeys=%s",
-                    workload_name,
-                    len(property_sources),
-                    len(effective_entries),
-                )
-
-                matched_keys = []
-                for key, entry in effective_entries.items():
-                    value_text = stringify_property_value(entry.get("value"))
-                    matches_value = regex.search(value_text) is not None
-
-                    if search_in == "value" and not matches_value:
-                        continue
-
-                    matched_keys.append({
-                        "key": key,
-                        "source": entry.get("source"),
-                        "matchOn": "value",
-                        "value": stringify_property_value(entry.get("value")),
-                    })
-
-                logger.info(
-                    "Config report workload=%s matchedKeys=%s",
-                    workload_name,
-                    len(matched_keys),
-                )
-
-                if matched_keys:
-                    matched_keys.sort(key=lambda item: item["key"])
-                    matched.append({
-                        "workloadName": workload_name,
-                        "workloadKind": workload_kind,
-                        "serviceName": service_name,
-                        "matches": matched_keys,
-                    })
-            except HTTPException as exc:
-                detail = getattr(exc, "detail", "")
-                logger.warning(
-                    "Config report workload=%s error=%s",
-                    workload_name,
-                    detail if isinstance(detail, str) else "HTTPException",
-                )
-                errors.append({
-                    "workloadName": workload_name,
-                    "workloadKind": workload_kind,
-                    "message": detail if isinstance(detail, str) else "Failed to fetch actuator env",
-                })
-            except Exception as exc:
-                logger.exception("Config report workload=%s unexpected_error", workload_name)
-                errors.append({
-                    "workloadName": workload_name,
-                    "workloadKind": workload_kind,
-                    "message": str(exc),
-                })
+        for matched_item, error_item in results:
+            if matched_item:
+                matched.append(matched_item)
+            if error_item:
+                errors.append(error_item)
 
         logger.info("Config report done matched=%s errors=%s", len(matched), len(errors))
         return {
@@ -649,7 +670,7 @@ async def get_spring_config_report_csv(
     caseInsensitive: bool = False,
     searchIn: str = "value",
 ):
-    report = build_config_report(namespace, pattern, caseInsensitive, searchIn)
+    report = await build_config_report(namespace, pattern, caseInsensitive, searchIn)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["workloadName", "workloadKind", "key", "value", "source", "matchOn"])

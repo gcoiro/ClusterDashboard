@@ -47,6 +47,7 @@ backend:
   enabled: true
   replicas: 1
   workers: 15
+  configReportConcurrency: 6
   image:
     repository: openshift-dashboard-backend
     tag: latest

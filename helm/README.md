@@ -76,6 +76,7 @@ The following table lists the configurable parameters and their default values:
 | `backend.enabled` | Enable backend deployment | `true` |
 | `backend.replicas` | Number of replicas | `1` |
 | `backend.workers` | Uvicorn worker count | `15` |
+| `backend.configReportConcurrency` | Concurrent workloads per config report | `6` |
 | `backend.image.repository` | Image repository | `openshift-dashboard-backend` |
 | `backend.image.tag` | Image tag | `latest` |
 | `backend.image.pullPolicy` | Image pull policy | `Always` |
