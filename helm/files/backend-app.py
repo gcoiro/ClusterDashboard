@@ -512,9 +512,9 @@ async def get_spring_config_report(
         )
         if not pattern:
             raise HTTPException(status_code=400, detail="pattern query parameter is required")
-        search_in = (searchIn or "key").lower()
-        if search_in not in {"key", "value", "both"}:
-            raise HTTPException(status_code=400, detail="searchIn must be one of: key, value, both")
+        search_in = (searchIn or "value").lower()
+        if search_in != "value":
+            raise HTTPException(status_code=400, detail="searchIn must be: value")
         try:
             flags = re.IGNORECASE if caseInsensitive else 0
             regex = re.compile(pattern, flags=flags)
@@ -595,6 +595,7 @@ async def get_spring_config_report(
                         "key": key,
                         "source": entry.get("source"),
                         "matchOn": match_on,
+                        "value": stringify_property_value(entry.get("value")),
                     })
 
                 logger.info(

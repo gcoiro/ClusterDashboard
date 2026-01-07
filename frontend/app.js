@@ -225,18 +225,25 @@ function setReportStatus(message, type = 'info') {
 function renderReportResults(data) {
     const matches = data.matched || [];
     const errors = data.errors || [];
+    const highlightPattern = reportPattern.value.trim();
+    const highlightCaseInsensitive = reportCase.checked;
 
     if (matches.length === 0) {
         reportResults.innerHTML = '<div class="report-empty">No Spring applications matched this pattern.</div>';
     } else {
         reportResults.innerHTML = matches.map(item => {
             const keys = item.matches || [];
-            const keyHtml = keys.map(keyEntry => `
-                <div class="report-key">
-                    ${escapeHtml(keyEntry.key)}
-                    <span>${escapeHtml(keyEntry.source || 'effective')} | match: ${escapeHtml(keyEntry.matchOn || 'key')}</span>
-                </div>
-            `).join('');
+            const keyHtml = keys.map(keyEntry => {
+                const valueText = keyEntry.value || '';
+                const highlightedValue = highlightMatches(valueText, highlightPattern, highlightCaseInsensitive);
+                return `
+                    <div class="report-key">
+                        <div class="report-key-name">${escapeHtml(keyEntry.key)}</div>
+                        <div class="report-value">${highlightedValue}</div>
+                        <span>${escapeHtml(keyEntry.source || 'effective')} | match: ${escapeHtml(keyEntry.matchOn || 'value')}</span>
+                    </div>
+                `;
+            }).join('');
 
             return `
                 <details class="report-card" open>
@@ -267,6 +274,33 @@ function renderReportResults(data) {
     }
 }
 
+function highlightMatches(text, pattern, caseInsensitive) {
+    if (!pattern) return escapeHtml(text);
+    let regex;
+    try {
+        regex = new RegExp(pattern, caseInsensitive ? 'gi' : 'g');
+    } catch (error) {
+        return escapeHtml(text);
+    }
+
+    let result = '';
+    let lastIndex = 0;
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+        if (match[0] === '') {
+            regex.lastIndex += 1;
+            continue;
+        }
+        result += escapeHtml(text.slice(lastIndex, match.index));
+        result += `<mark class="report-highlight">${escapeHtml(match[0])}</mark>`;
+        lastIndex = match.index + match[0].length;
+    }
+
+    result += escapeHtml(text.slice(lastIndex));
+    return result;
+}
+
 async function runSpringConfigReport() {
     const pattern = reportPattern.value.trim();
     if (!currentNamespace) {
@@ -279,7 +313,7 @@ async function runSpringConfigReport() {
     }
 
     const caseInsensitive = reportCase.checked;
-    const searchIn = reportScope.value || 'key';
+    const searchIn = reportScope.value || 'value';
     const query = new URLSearchParams({
         pattern,
         caseInsensitive: caseInsensitive ? 'true' : 'false',
