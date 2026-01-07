@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import json
@@ -13,6 +13,7 @@ import re
 import asyncio
 from dotenv import load_dotenv
 import logging
+import time
 
 load_dotenv()
 
@@ -30,6 +31,12 @@ KUBERNETES_API_SERVER = os.getenv("KUBERNETES_API_SERVER", "https://kubernetes.d
 KUBERNETES_TOKEN = os.getenv("KUBERNETES_TOKEN", "")
 DEFAULT_SPRING_PORT = os.getenv("DEFAULT_SPRING_PORT", "9150")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+try:
+    CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "20"))
+except ValueError:
+    CACHE_TTL_SECONDS = 20
+if CACHE_TTL_SECONDS < 0:
+    CACHE_TTL_SECONDS = 0
 try:
     CONFIG_REPORT_CONCURRENCY = int(os.getenv("CONFIG_REPORT_CONCURRENCY", "6"))
 except ValueError:
@@ -50,6 +57,42 @@ if not KUBERNETES_TOKEN:
             token_source = "serviceaccount"
 logger.info("API server: %s", KUBERNETES_API_SERVER)
 logger.info("Token source: %s", token_source)
+logger.info("Cache TTL: %ss", CACHE_TTL_SECONDS)
+
+_response_cache = {}
+
+
+@app.middleware("http")
+async def response_cache_middleware(request: Request, call_next):
+    if CACHE_TTL_SECONDS <= 0 or request.method != "GET" or not request.url.path.startswith("/api/"):
+        return await call_next(request)
+
+    cache_key = f"{request.url.path}?{request.url.query}"
+    cached = _response_cache.get(cache_key)
+    if cached:
+        expires_at, status_code, headers, body, media_type = cached
+        if time.time() < expires_at:
+            return Response(content=body, status_code=status_code, headers=headers, media_type=media_type)
+        _response_cache.pop(cache_key, None)
+
+    response = await call_next(request)
+    if response.status_code != 200:
+        return response
+
+    body = b""
+    async for chunk in response.body_iterator:
+        body += chunk
+
+    headers = dict(response.headers)
+    headers["Cache-Control"] = f"public, max-age={CACHE_TTL_SECONDS}"
+    _response_cache[cache_key] = (
+        time.time() + CACHE_TTL_SECONDS,
+        response.status_code,
+        headers,
+        body,
+        response.media_type,
+    )
+    return Response(content=body, status_code=response.status_code, headers=headers, media_type=response.media_type)
 
 
 def oc_base_args():

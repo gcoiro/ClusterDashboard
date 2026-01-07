@@ -27,6 +27,9 @@ const reportCase = document.getElementById('report-case');
 const reportStatus = document.getElementById('report-status');
 const reportResults = document.getElementById('report-results');
 
+const REPORT_RETRY_LIMIT = 3;
+const REPORT_RETRY_DELAY_MS = 1000;
+
 // State
 let currentNamespace = '';
 let workloads = [];
@@ -249,6 +252,39 @@ function setReportStatus(message, type = 'info') {
     reportStatus.className = `report-status ${type}`;
 }
 
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchWithRetry(url, options = {}, retryOptions = {}) {
+    const {
+        retries = REPORT_RETRY_LIMIT,
+        delayMs = REPORT_RETRY_DELAY_MS,
+        retryOnStatuses = [408, 429, 500, 502, 503, 504],
+    } = retryOptions;
+
+    for (let attempt = 1; attempt <= retries; attempt += 1) {
+        try {
+            const response = await fetch(url, options);
+            if (response.ok) {
+                return response;
+            }
+
+            if (!retryOnStatuses.includes(response.status) || attempt === retries) {
+                return response;
+            }
+        } catch (error) {
+            if (attempt === retries) {
+                throw error;
+            }
+        }
+
+        await sleep(delayMs * attempt);
+    }
+
+    return fetch(url, options);
+}
+
 function buildReportCards(data) {
     const matches = data.matched || [];
     const errors = data.errors || [];
@@ -379,7 +415,9 @@ async function runSpringConfigReport() {
     setReportStatus('Running report...', 'info');
 
     try {
-        const response = await fetch(`${API_BASE_URL}/config/${currentNamespace}/report?${query.toString()}`);
+        const response = await fetchWithRetry(
+            `${API_BASE_URL}/config/${currentNamespace}/report?${query.toString()}`,
+        );
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
             throw new Error(errorData.detail || 'Failed to fetch report');
@@ -427,7 +465,9 @@ async function runSpringConfigReportAll() {
             const namespace = namespaces[index];
             index += 1;
             try {
-                const response = await fetch(`${API_BASE_URL}/config/${namespace}/report?${query.toString()}`);
+                const response = await fetchWithRetry(
+                    `${API_BASE_URL}/config/${namespace}/report?${query.toString()}`,
+                );
                 if (!response.ok) {
                     const errorData = await response.json().catch(() => ({}));
                     throw new Error(errorData.detail || 'Failed to fetch report');

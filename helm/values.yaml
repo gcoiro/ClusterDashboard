@@ -48,6 +48,7 @@ backend:
   replicas: 1
   workers: 15
   configReportConcurrency: 6
+  cacheTtlSeconds: 20
   image:
     repository: openshift-dashboard-backend
     tag: latest
