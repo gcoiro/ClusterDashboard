@@ -30,6 +30,8 @@ spec:
           - "/tmp"
           - "--host"
           - "0.0.0.0"
+          - "--workers"
+          - {{ .Values.backend.workers | quote }}
           - "--port"
           - {{ .Values.backend.containerPort | quote }}
         ports:
