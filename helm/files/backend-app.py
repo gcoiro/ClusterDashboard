@@ -353,6 +353,38 @@ def build_effective_key_map(property_sources):
     return key_to_source
 
 
+def normalize_property_value(value):
+    if isinstance(value, dict) and "value" in value:
+        return value.get("value")
+    return value
+
+
+def stringify_property_value(value):
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value)
+        except TypeError:
+            return str(value)
+    return str(value)
+
+
+def build_effective_entries(property_sources):
+    entries = {}
+    for source in property_sources:
+        properties = source.get("properties", {}) or {}
+        source_name = source.get("name") or "propertySource"
+        for key, value in properties.items():
+            if key in entries:
+                continue
+            entries[key] = {
+                "source": source_name,
+                "value": normalize_property_value(value),
+            }
+    return entries
+
+
 def list_workloads(namespace: str):
     workloads = []
     try:
@@ -464,16 +496,25 @@ async def scale_deploymentconfig(namespace: str, name: str, request: ScaleReques
 
 
 @app.get("/api/config/{namespace}/report")
-async def get_spring_config_report(namespace: str, pattern: str, caseInsensitive: bool = False):
+async def get_spring_config_report(
+    namespace: str,
+    pattern: str,
+    caseInsensitive: bool = False,
+    searchIn: str = "key",
+):
     try:
         logger.info(
-            "Config report request namespace=%s pattern=%s caseInsensitive=%s",
+            "Config report request namespace=%s pattern=%s caseInsensitive=%s searchIn=%s",
             namespace,
             pattern,
             caseInsensitive,
+            searchIn,
         )
         if not pattern:
             raise HTTPException(status_code=400, detail="pattern query parameter is required")
+        search_in = (searchIn or "key").lower()
+        if search_in not in {"key", "value", "both"}:
+            raise HTTPException(status_code=400, detail="searchIn must be one of: key, value, both")
         try:
             flags = re.IGNORECASE if caseInsensitive else 0
             regex = re.compile(pattern, flags=flags)
@@ -522,19 +563,40 @@ async def get_spring_config_report(namespace: str, pattern: str, caseInsensitive
                 actuator_payload = fetch_actuator_env(actuator_url)
 
                 property_sources, _ = extract_env_details(actuator_payload)
-                effective_key_map = build_effective_key_map(property_sources)
+                effective_entries = build_effective_entries(property_sources)
                 logger.info(
                     "Config report workload=%s propertySources=%s effectiveKeys=%s",
                     workload_name,
                     len(property_sources),
-                    len(effective_key_map),
+                    len(effective_entries),
                 )
 
-                matched_keys = [
-                    {"key": key, "source": source}
-                    for key, source in effective_key_map.items()
-                    if regex.search(key)
-                ]
+                matched_keys = []
+                for key, entry in effective_entries.items():
+                    matches_key = regex.search(key) is not None
+                    value_text = stringify_property_value(entry.get("value"))
+                    matches_value = regex.search(value_text) is not None
+
+                    if search_in == "key" and not matches_key:
+                        continue
+                    if search_in == "value" and not matches_value:
+                        continue
+                    if search_in == "both" and not (matches_key or matches_value):
+                        continue
+
+                    if matches_key and matches_value:
+                        match_on = "both"
+                    elif matches_key:
+                        match_on = "key"
+                    else:
+                        match_on = "value"
+
+                    matched_keys.append({
+                        "key": key,
+                        "source": entry.get("source"),
+                        "matchOn": match_on,
+                    })
+
                 logger.info(
                     "Config report workload=%s matchedKeys=%s",
                     workload_name,
@@ -574,6 +636,7 @@ async def get_spring_config_report(namespace: str, pattern: str, caseInsensitive
             "namespace": namespace,
             "pattern": pattern,
             "caseInsensitive": caseInsensitive,
+            "searchIn": search_in,
             "totalWorkloads": len(workloads),
             "matched": matched,
             "errors": errors,

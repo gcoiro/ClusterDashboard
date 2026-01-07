@@ -17,6 +17,7 @@ const configContent = document.getElementById('config-content');
 const configClose = document.getElementById('config-close');
 const reportRun = document.getElementById('report-run');
 const reportPattern = document.getElementById('report-pattern');
+const reportScope = document.getElementById('report-scope');
 const reportCase = document.getElementById('report-case');
 const reportStatus = document.getElementById('report-status');
 const reportResults = document.getElementById('report-results');
@@ -233,7 +234,7 @@ function renderReportResults(data) {
             const keyHtml = keys.map(keyEntry => `
                 <div class="report-key">
                     ${escapeHtml(keyEntry.key)}
-                    <span>${escapeHtml(keyEntry.source || 'effective')}</span>
+                    <span>${escapeHtml(keyEntry.source || 'effective')} | match: ${escapeHtml(keyEntry.matchOn || 'key')}</span>
                 </div>
             `).join('');
 
@@ -278,9 +279,11 @@ async function runSpringConfigReport() {
     }
 
     const caseInsensitive = reportCase.checked;
+    const searchIn = reportScope.value || 'key';
     const query = new URLSearchParams({
         pattern,
         caseInsensitive: caseInsensitive ? 'true' : 'false',
+        searchIn,
     });
 
     reportResults.innerHTML = '';
@@ -294,7 +297,7 @@ async function runSpringConfigReport() {
         }
         const data = await response.json();
         const matchedCount = (data.matched || []).length;
-        setReportStatus(`Found ${matchedCount} application(s) with matching keys.`, 'success');
+        setReportStatus(`Found ${matchedCount} application(s) with matching entries.`, 'success');
         renderReportResults(data);
     } catch (error) {
         console.error('Error running config report:', error);
