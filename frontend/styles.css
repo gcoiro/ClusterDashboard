@@ -277,6 +277,18 @@ header h1 {
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
+    padding: 8px 10px;
+    border-radius: 12px;
+    background: rgba(15, 118, 110, 0.08);
+    box-shadow: inset 0 0 0 1px rgba(15, 118, 110, 0.12);
+}
+
+.report-postrun {
+    display: none;
+}
+
+.report-actions.is-ready .report-postrun {
+    display: inline-flex;
 }
 
 .report-meta {

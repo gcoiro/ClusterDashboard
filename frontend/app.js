@@ -23,6 +23,8 @@ const configProfiles = document.getElementById('config-profiles');
 const configContent = document.getElementById('config-content');
 const configClose = document.getElementById('config-close');
 const reportRun = document.getElementById('report-run');
+
+const reportActions = document.querySelector('.report-actions');
 const reportDownload = document.getElementById('report-download');
 const reportCollapseNs = document.getElementById('report-collapse-ns');
 const reportCollapseApps = document.getElementById('report-collapse-apps');
@@ -151,6 +153,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     setReportStatus('Enter a regex pattern and run the report.', 'info');
+    setReportPostRunVisible(false);
 });
 
 // Load namespaces
@@ -359,6 +362,13 @@ function setReportStatus(message, type = 'info') {
     reportStatus.className = `report-status ${type}`;
 }
 
+function setReportPostRunVisible(isVisible) {
+    if (!reportActions) {
+        return;
+    }
+    reportActions.classList.toggle('is-ready', isVisible);
+}
+
 function setNamespaceScaleStatus(message, type = 'info') {
     namespaceScaleStatus.textContent = message;
     namespaceScaleStatus.className = `namespace-scale-status ${type}`;
@@ -375,6 +385,7 @@ function showReportPage() {
     homePanel.style.display = 'none';
     reportPage.style.display = 'block';
     namespacePage.style.display = 'none';
+    setReportPostRunVisible(false);
     hideConfigPanel();
 }
 
@@ -536,6 +547,8 @@ async function runSpringConfigReport() {
         return;
     }
 
+    setReportPostRunVisible(false);
+
     const caseInsensitive = reportCase.checked;
     const searchIn = reportScope.value || 'value';
     const query = new URLSearchParams({
@@ -547,10 +560,12 @@ async function runSpringConfigReport() {
     reportResults.innerHTML = '';
     if (selectedNamespaces.length === 1) {
         await runSingleNamespaceReport(selectedNamespaces[0], query);
+        setReportPostRunVisible(true);
         return;
     }
 
     await runMultiNamespaceReport(selectedNamespaces, query);
+    setReportPostRunVisible(true);
 }
 
 async function runSingleNamespaceReport(namespace, query) {
