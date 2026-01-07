@@ -1,8 +1,7 @@
-from fastapi import FastAPI, HTTPException, Response, Request
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import json
-import base64
 import csv
 import io
 import subprocess
@@ -73,7 +72,7 @@ logger.info("Token source: %s", token_source)
 logger.info("Cache TTL: %ss", CACHE_TTL_SECONDS)
 logger.info("Redis enabled: %s", "yes" if REDIS_HOST else "no")
 
-_response_cache = {}
+_actuator_cache = {}
 _redis_client = None
 
 
@@ -94,76 +93,6 @@ def get_redis_client():
     return _redis_client
 
 
-def serialize_cache_entry(status_code: int, headers: dict, media_type: str, body: bytes) -> bytes:
-    payload = {
-        "status_code": status_code,
-        "headers": headers,
-        "media_type": media_type,
-        "body": base64.b64encode(body).decode("ascii"),
-    }
-    return json.dumps(payload, separators=(",", ":")).encode("utf-8")
-
-
-def deserialize_cache_entry(payload: bytes):
-    data = json.loads(payload.decode("utf-8"))
-    return (
-        data.get("status_code", 200),
-        data.get("headers", {}),
-        data.get("media_type"),
-        base64.b64decode(data.get("body", "")),
-    )
-
-
-@app.middleware("http")
-async def response_cache_middleware(request: Request, call_next):
-    if CACHE_TTL_SECONDS <= 0 or request.method != "GET" or not request.url.path.startswith("/api/"):
-        return await call_next(request)
-
-    cache_key = f"api-cache:{request.url.path}?{request.url.query}"
-    redis_client = get_redis_client()
-    if redis_client is not None:
-        try:
-            cached_payload = redis_client.get(cache_key)
-            if cached_payload:
-                status_code, headers, media_type, body = deserialize_cache_entry(cached_payload)
-                return Response(content=body, status_code=status_code, headers=headers, media_type=media_type)
-        except redis.RedisError as exc:
-            logger.warning("Redis cache read failed: %s", str(exc))
-    else:
-        cached = _response_cache.get(cache_key)
-        if cached:
-            expires_at, status_code, headers, body, media_type = cached
-            if time.time() < expires_at:
-                return Response(content=body, status_code=status_code, headers=headers, media_type=media_type)
-            _response_cache.pop(cache_key, None)
-
-    response = await call_next(request)
-    if response.status_code != 200:
-        return response
-
-    body = b""
-    async for chunk in response.body_iterator:
-        body += chunk
-
-    headers = dict(response.headers)
-    headers.pop("content-length", None)
-    headers.pop("transfer-encoding", None)
-    headers["Cache-Control"] = f"public, max-age={CACHE_TTL_SECONDS}"
-    if redis_client is not None:
-        try:
-            payload = serialize_cache_entry(response.status_code, headers, response.media_type, body)
-            redis_client.setex(cache_key, CACHE_TTL_SECONDS, payload)
-        except redis.RedisError as exc:
-            logger.warning("Redis cache write failed: %s", str(exc))
-    else:
-        _response_cache[cache_key] = (
-            time.time() + CACHE_TTL_SECONDS,
-            response.status_code,
-            headers,
-            body,
-            response.media_type,
-        )
-    return Response(content=body, status_code=response.status_code, headers=headers, media_type=response.media_type)
 
 
 def oc_base_args():
@@ -399,6 +328,28 @@ def detect_pod_port(pod: dict):
 
 def fetch_actuator_env(url: str):
     logger.info("Fetching actuator env %s", url)
+    if CACHE_TTL_SECONDS > 0:
+        cache_key = f"actuator-env:{url}"
+        redis_client = get_redis_client()
+        if redis_client is not None:
+            try:
+                cached_payload = redis_client.get(cache_key)
+                if cached_payload:
+                    logger.info("Actuator cache hit (redis) %s", url)
+                    return json.loads(cached_payload.decode("utf-8"))
+            except redis.RedisError as exc:
+                logger.warning("Redis cache read failed: %s", str(exc))
+            except json.JSONDecodeError:
+                logger.warning("Redis cache payload invalid, ignoring")
+        else:
+            cached = _actuator_cache.get(cache_key)
+            if cached:
+                expires_at, payload = cached
+                if time.time() < expires_at:
+                    logger.info("Actuator cache hit (memory) %s", url)
+                    return payload
+                _actuator_cache.pop(cache_key, None)
+
     try:
         request = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(request, timeout=10) as response:
@@ -427,10 +378,21 @@ def fetch_actuator_env(url: str):
         )
 
     try:
-        return json.loads(payload)
+        parsed = json.loads(payload)
     except json.JSONDecodeError as exc:
         logger.error("Actuator JSON parse error: %s", str(exc))
         raise_structured_error(502, "actuator_invalid_json", f"Actuator returned invalid JSON: {str(exc)}")
+    if CACHE_TTL_SECONDS > 0:
+        cache_key = f"actuator-env:{url}"
+        redis_client = get_redis_client()
+        if redis_client is not None:
+            try:
+                redis_client.setex(cache_key, CACHE_TTL_SECONDS, payload.encode("utf-8"))
+            except redis.RedisError as exc:
+                logger.warning("Redis cache write failed: %s", str(exc))
+        else:
+            _actuator_cache[cache_key] = (time.time() + CACHE_TTL_SECONDS, parsed)
+    return parsed
 
 
 def normalize_workload(item, kind_label):
