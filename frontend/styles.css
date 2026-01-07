@@ -248,6 +248,10 @@ header h1 {
     background: #ffffff;
 }
 
+.report-namespace summary {
+    cursor: pointer;
+}
+
 .report-namespace-title {
     font-weight: 700;
     color: #37474f;

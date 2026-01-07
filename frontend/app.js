@@ -18,6 +18,9 @@ const configClose = document.getElementById('config-close');
 const reportRun = document.getElementById('report-run');
 const reportRunAll = document.getElementById('report-run-all');
 const reportDownload = document.getElementById('report-download');
+const reportCollapseNs = document.getElementById('report-collapse-ns');
+const reportCollapseApps = document.getElementById('report-collapse-apps');
+const reportCollapseErrors = document.getElementById('report-collapse-errors');
 const reportPattern = document.getElementById('report-pattern');
 const reportScope = document.getElementById('report-scope');
 const reportCase = document.getElementById('report-case');
@@ -65,6 +68,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     reportDownload.addEventListener('click', () => {
         downloadSpringConfigReport();
+    });
+
+    reportCollapseNs.addEventListener('click', () => {
+        collapseAllNamespaces();
+    });
+
+    reportCollapseApps.addEventListener('click', () => {
+        collapseAllApplications();
+    });
+
+    reportCollapseErrors.addEventListener('click', () => {
+        collapseErrorApplications();
     });
 
     reportPattern.addEventListener('keydown', (event) => {
@@ -263,7 +278,7 @@ function buildReportCards(data) {
             }).join('');
 
             return `
-                <details class="report-card" open>
+                <details class="report-card" data-kind="app" open>
                     <summary>
                         <span class="report-summary">
                             ${escapeHtml(item.workloadName)}
@@ -286,7 +301,7 @@ function buildReportCards(data) {
         `).join('');
 
         html += `
-            <details class="report-card">
+            <details class="report-card" data-kind="error" data-error="true">
                 <summary>Skipped applications <span class="config-count">${errors.length}</span></summary>
                 <div class="report-keys">${errorHtml}</div>
             </details>
@@ -307,10 +322,10 @@ function renderMultiNamespaceResults(reports) {
     }
 
     reportResults.innerHTML = reports.map(report => `
-        <div class="report-namespace">
-            <div class="report-namespace-title">${escapeHtml(report.namespace)}</div>
+        <details class="report-namespace" data-namespace="${escapeHtml(report.namespace)}" open>
+            <summary class="report-namespace-title">${escapeHtml(report.namespace)}</summary>
             <div class="report-namespace-body">${buildReportCards(report.data)}</div>
-        </div>
+        </details>
     `).join('');
 }
 
@@ -481,6 +496,27 @@ async function downloadSpringConfigReport() {
         console.error('Error downloading config report:', error);
         setReportStatus(`Error: ${error.message}`, 'error');
     }
+}
+
+function collapseAllNamespaces() {
+    const namespaceDetails = reportResults.querySelectorAll('.report-namespace');
+    namespaceDetails.forEach(detail => {
+        detail.open = false;
+    });
+}
+
+function collapseAllApplications() {
+    const appDetails = reportResults.querySelectorAll('.report-card[data-kind="app"]');
+    appDetails.forEach(detail => {
+        detail.open = false;
+    });
+}
+
+function collapseErrorApplications() {
+    const errorDetails = reportResults.querySelectorAll('.report-card[data-error="true"]');
+    errorDetails.forEach(detail => {
+        detail.open = false;
+    });
 }
 
 function extractEnvDetails(payload) {
