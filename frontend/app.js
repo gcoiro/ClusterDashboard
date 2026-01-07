@@ -6,6 +6,13 @@ const refreshBtn = document.getElementById('refresh-btn');
 const deploymentsContainer = document.getElementById('deployments-container');
 const loadingDiv = document.getElementById('loading');
 const errorDiv = document.getElementById('error');
+const homePanel = document.getElementById('home-panel');
+const reportPage = document.getElementById('report-page');
+const namespacePage = document.getElementById('namespace-page');
+const gotoReportBtn = document.getElementById('goto-report');
+const gotoNamespaceBtn = document.getElementById('goto-namespace');
+const backHomeFromReport = document.getElementById('back-home-from-report');
+const backHomeFromNamespace = document.getElementById('back-home-from-namespace');
 const configPanel = document.getElementById('config-panel');
 const configTitle = document.getElementById('config-title');
 const configMeta = document.getElementById('config-meta');
@@ -16,7 +23,6 @@ const configProfiles = document.getElementById('config-profiles');
 const configContent = document.getElementById('config-content');
 const configClose = document.getElementById('config-close');
 const reportRun = document.getElementById('report-run');
-const reportRunAll = document.getElementById('report-run-all');
 const reportDownload = document.getElementById('report-download');
 const reportCollapseNs = document.getElementById('report-collapse-ns');
 const reportCollapseApps = document.getElementById('report-collapse-apps');
@@ -26,6 +32,9 @@ const reportScope = document.getElementById('report-scope');
 const reportCase = document.getElementById('report-case');
 const reportStatus = document.getElementById('report-status');
 const reportResults = document.getElementById('report-results');
+const reportNamespaceList = document.getElementById('report-namespace-list');
+const reportSelectAll = document.getElementById('report-select-all');
+const reportClear = document.getElementById('report-clear');
 const namespaceScaleInput = document.getElementById('namespace-scale-input');
 const namespaceScaleBtn = document.getElementById('namespace-scale-btn');
 const namespaceScaleStatus = document.getElementById('namespace-scale-status');
@@ -42,6 +51,24 @@ let namespaces = [];
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     loadNamespaces();
+
+    showHomePage();
+
+    gotoReportBtn.addEventListener('click', () => {
+        showReportPage();
+    });
+
+    gotoNamespaceBtn.addEventListener('click', () => {
+        showNamespacePage();
+    });
+
+    backHomeFromReport.addEventListener('click', () => {
+        showHomePage();
+    });
+
+    backHomeFromNamespace.addEventListener('click', () => {
+        showHomePage();
+    });
     
     namespaceSelect.addEventListener('change', (e) => {
         currentNamespace = e.target.value;
@@ -80,10 +107,6 @@ document.addEventListener('DOMContentLoaded', () => {
         runSpringConfigReport();
     });
 
-    reportRunAll.addEventListener('click', () => {
-        runSpringConfigReportAll();
-    });
-
     reportDownload.addEventListener('click', () => {
         downloadSpringConfigReport();
     });
@@ -104,6 +127,27 @@ document.addEventListener('DOMContentLoaded', () => {
         if (event.key === 'Enter') {
             runSpringConfigReport();
         }
+    });
+
+    reportSelectAll.addEventListener('change', () => {
+        const shouldSelect = reportSelectAll.checked;
+        Array.from(reportNamespaceList.querySelectorAll('input[type=\"checkbox\"]'))
+            .forEach(input => {
+                input.checked = shouldSelect;
+            });
+        updateReportSelectionState();
+    });
+
+    reportClear.addEventListener('click', () => {
+        Array.from(reportNamespaceList.querySelectorAll('input[type=\"checkbox\"]'))
+            .forEach(input => {
+                input.checked = false;
+            });
+        updateReportSelectionState();
+    });
+
+    reportNamespaceList.addEventListener('change', () => {
+        updateReportSelectionState();
     });
 
     setReportStatus('Enter a regex pattern and run the report.', 'info');
@@ -130,6 +174,11 @@ async function loadNamespaces() {
         if (namespaces.length > 0) {
             currentNamespace = namespaces[0];
             namespaceSelect.value = currentNamespace;
+        }
+
+        renderReportNamespaceList();
+
+        if (namespaces.length > 0) {
             loadWorkloads();
         } else {
             deploymentsContainer.innerHTML = '<div class="loading">No namespaces found</div>';
@@ -137,6 +186,49 @@ async function loadNamespaces() {
     } catch (error) {
         console.error('Error loading namespaces:', error);
     }
+}
+
+function renderReportNamespaceList() {
+    reportNamespaceList.innerHTML = '';
+
+    if (!namespaces.length) {
+        reportNamespaceList.innerHTML = '<div class="report-empty">No namespaces available.</div>';
+        reportSelectAll.checked = false;
+        reportSelectAll.indeterminate = false;
+        return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    namespaces.forEach(ns => {
+        const label = document.createElement('label');
+        label.className = 'report-namespace-item';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.value = ns;
+        input.checked = ns === currentNamespace;
+        const text = document.createElement('span');
+        text.textContent = ns;
+        label.append(input, text);
+        fragment.appendChild(label);
+    });
+
+    reportNamespaceList.appendChild(fragment);
+    updateReportSelectionState();
+}
+
+function getSelectedReportNamespaces() {
+    return Array.from(reportNamespaceList.querySelectorAll('input[type="checkbox"]:checked'))
+        .map(input => input.value);
+}
+
+function updateReportSelectionState() {
+    const selected = getSelectedReportNamespaces();
+    const total = namespaces.length;
+    const allSelected = total > 0 && selected.length === total;
+    const someSelected = selected.length > 0 && selected.length < total;
+
+    reportSelectAll.checked = allSelected;
+    reportSelectAll.indeterminate = someSelected;
 }
 
 // Load workloads
@@ -270,6 +362,26 @@ function setReportStatus(message, type = 'info') {
 function setNamespaceScaleStatus(message, type = 'info') {
     namespaceScaleStatus.textContent = message;
     namespaceScaleStatus.className = `namespace-scale-status ${type}`;
+}
+
+function showHomePage() {
+    homePanel.style.display = 'block';
+    reportPage.style.display = 'none';
+    namespacePage.style.display = 'none';
+    hideConfigPanel();
+}
+
+function showReportPage() {
+    homePanel.style.display = 'none';
+    reportPage.style.display = 'block';
+    namespacePage.style.display = 'none';
+    hideConfigPanel();
+}
+
+function showNamespacePage() {
+    homePanel.style.display = 'none';
+    reportPage.style.display = 'none';
+    namespacePage.style.display = 'flex';
 }
 
 function sleep(ms) {
@@ -414,12 +526,13 @@ function highlightMatches(text, pattern, caseInsensitive) {
 
 async function runSpringConfigReport() {
     const pattern = reportPattern.value.trim();
-    if (!currentNamespace) {
-        setReportStatus('Select a namespace first.', 'error');
-        return;
-    }
+    const selectedNamespaces = getSelectedReportNamespaces();
     if (!pattern) {
         setReportStatus('Enter a regex pattern to search.', 'error');
+        return;
+    }
+    if (!selectedNamespaces.length) {
+        setReportStatus('Select at least one namespace to scan.', 'error');
         return;
     }
 
@@ -432,11 +545,20 @@ async function runSpringConfigReport() {
     });
 
     reportResults.innerHTML = '';
-    setReportStatus('Running report...', 'info');
+    if (selectedNamespaces.length === 1) {
+        await runSingleNamespaceReport(selectedNamespaces[0], query);
+        return;
+    }
+
+    await runMultiNamespaceReport(selectedNamespaces, query);
+}
+
+async function runSingleNamespaceReport(namespace, query) {
+    setReportStatus(`Running report for ${namespace}...`, 'info');
 
     try {
         const response = await fetchWithRetry(
-            `${API_BASE_URL}/config/${currentNamespace}/report?${query.toString()}`,
+            `${API_BASE_URL}/config/${namespace}/report?${query.toString()}`,
         );
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
@@ -444,7 +566,7 @@ async function runSpringConfigReport() {
         }
         const data = await response.json();
         const matchedCount = (data.matched || []).length;
-        setReportStatus(`Found ${matchedCount} application(s) with matching entries.`, 'success');
+        setReportStatus(`Found ${matchedCount} application(s) with matching entries in ${namespace}.`, 'success');
         renderReportResults(data);
     } catch (error) {
         console.error('Error running config report:', error);
@@ -453,27 +575,14 @@ async function runSpringConfigReport() {
     }
 }
 
-async function runSpringConfigReportAll() {
-    const pattern = reportPattern.value.trim();
-    if (!namespaces.length) {
+async function runMultiNamespaceReport(targetNamespaces, query) {
+    if (!targetNamespaces.length) {
         setReportStatus('No namespaces available to search.', 'error');
         return;
     }
-    if (!pattern) {
-        setReportStatus('Enter a regex pattern to search.', 'error');
-        return;
-    }
-
-    const caseInsensitive = reportCase.checked;
-    const searchIn = reportScope.value || 'value';
-    const query = new URLSearchParams({
-        pattern,
-        caseInsensitive: caseInsensitive ? 'true' : 'false',
-        searchIn,
-    });
 
     reportResults.innerHTML = '';
-    setReportStatus(`Running report across ${namespaces.length} namespaces (10 at a time)...`, 'info');
+    setReportStatus(`Running report across ${targetNamespaces.length} namespaces (10 at a time)...`, 'info');
 
     const reports = [];
     let processed = 0;
@@ -481,8 +590,8 @@ async function runSpringConfigReportAll() {
     let index = 0;
 
     async function worker() {
-        while (index < namespaces.length) {
-            const namespace = namespaces[index];
+        while (index < targetNamespaces.length) {
+            const namespace = targetNamespaces[index];
             index += 1;
             try {
                 const response = await fetchWithRetry(
@@ -501,29 +610,32 @@ async function runSpringConfigReportAll() {
                 });
             } finally {
                 processed += 1;
-                setReportStatus(`Processed ${processed}/${namespaces.length} namespaces...`, 'info');
+                setReportStatus(`Processed ${processed}/${targetNamespaces.length} namespaces...`, 'info');
             }
         }
     }
 
-    const workers = Array.from({ length: Math.min(concurrency, namespaces.length) }, () => worker());
+    const workers = Array.from({ length: Math.min(concurrency, targetNamespaces.length) }, () => worker());
     await Promise.all(workers);
 
     reports.sort((a, b) => a.namespace.localeCompare(b.namespace));
-    setReportStatus(`Finished report for ${namespaces.length} namespaces.`, 'success');
+    setReportStatus(`Finished report for ${targetNamespaces.length} namespaces.`, 'success');
     renderMultiNamespaceResults(reports);
 }
 
 async function downloadSpringConfigReport() {
     const pattern = reportPattern.value.trim();
-    if (!currentNamespace) {
-        setReportStatus('Select a namespace first.', 'error');
-        return;
-    }
+    const selectedNamespaces = getSelectedReportNamespaces();
     if (!pattern) {
         setReportStatus('Enter a regex pattern to search.', 'error');
         return;
     }
+    if (selectedNamespaces.length !== 1) {
+        setReportStatus('Select exactly one namespace to download a CSV.', 'error');
+        return;
+    }
+
+    const targetNamespace = selectedNamespaces[0];
 
     const caseInsensitive = reportCase.checked;
     const searchIn = reportScope.value || 'value';
@@ -536,7 +648,7 @@ async function downloadSpringConfigReport() {
     setReportStatus('Preparing CSV download...', 'info');
 
     try {
-        const response = await fetch(`${API_BASE_URL}/config/${currentNamespace}/report.csv?${query.toString()}`);
+        const response = await fetch(`${API_BASE_URL}/config/${targetNamespace}/report.csv?${query.toString()}`);
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
             throw new Error(errorData.detail || 'Failed to download report');
@@ -546,7 +658,7 @@ async function downloadSpringConfigReport() {
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = `spring-config-report-${currentNamespace}.csv`;
+        link.download = `spring-config-report-${targetNamespace}.csv`;
         document.body.appendChild(link);
         link.click();
         link.remove();
