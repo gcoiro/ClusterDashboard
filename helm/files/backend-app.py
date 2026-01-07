@@ -466,6 +466,12 @@ async def scale_deploymentconfig(namespace: str, name: str, request: ScaleReques
 @app.get("/api/config/{namespace}/report")
 async def get_spring_config_report(namespace: str, pattern: str, caseInsensitive: bool = False):
     try:
+        logger.info(
+            "Config report request namespace=%s pattern=%s caseInsensitive=%s",
+            namespace,
+            pattern,
+            caseInsensitive,
+        )
         if not pattern:
             raise HTTPException(status_code=400, detail="pattern query parameter is required")
         try:
@@ -476,6 +482,7 @@ async def get_spring_config_report(namespace: str, pattern: str, caseInsensitive
 
         workloads = list_workloads(namespace)
         workloads.sort(key=lambda item: item.get("name") or "")
+        logger.info("Config report workloads=%s", len(workloads))
 
         matched = []
         errors = []
@@ -485,10 +492,12 @@ async def get_spring_config_report(namespace: str, pattern: str, caseInsensitive
             workload_kind = workload.get("kind")
             if not workload_name:
                 continue
+            logger.info("Config report workload=%s kind=%s", workload_name, workload_kind)
 
             try:
                 service = get_service_by_name(namespace, workload_name)
                 if not service:
+                    logger.warning("Config report skip=%s reason=service_not_found", workload_name)
                     errors.append({
                         "workloadName": workload_name,
                         "workloadKind": workload_kind,
@@ -498,6 +507,7 @@ async def get_spring_config_report(namespace: str, pattern: str, caseInsensitive
 
                 port = resolve_service_port(service)
                 if port is None:
+                    logger.warning("Config report skip=%s reason=service_port_missing", workload_name)
                     errors.append({
                         "workloadName": workload_name,
                         "workloadKind": workload_kind,
@@ -508,16 +518,28 @@ async def get_spring_config_report(namespace: str, pattern: str, caseInsensitive
                 service_name = service.get("metadata", {}).get("name") or workload_name
                 service_host = f"{service_name}.{namespace}.svc.cluster.local"
                 actuator_url = f"http://{service_host}:{port}/actuator/env"
+                logger.info("Config report actuator=%s", actuator_url)
                 actuator_payload = fetch_actuator_env(actuator_url)
 
                 property_sources, _ = extract_env_details(actuator_payload)
                 effective_key_map = build_effective_key_map(property_sources)
+                logger.info(
+                    "Config report workload=%s propertySources=%s effectiveKeys=%s",
+                    workload_name,
+                    len(property_sources),
+                    len(effective_key_map),
+                )
 
                 matched_keys = [
                     {"key": key, "source": source}
                     for key, source in effective_key_map.items()
                     if regex.search(key)
                 ]
+                logger.info(
+                    "Config report workload=%s matchedKeys=%s",
+                    workload_name,
+                    len(matched_keys),
+                )
 
                 if matched_keys:
                     matched_keys.sort(key=lambda item: item["key"])
@@ -529,18 +551,25 @@ async def get_spring_config_report(namespace: str, pattern: str, caseInsensitive
                     })
             except HTTPException as exc:
                 detail = getattr(exc, "detail", "")
+                logger.warning(
+                    "Config report workload=%s error=%s",
+                    workload_name,
+                    detail if isinstance(detail, str) else "HTTPException",
+                )
                 errors.append({
                     "workloadName": workload_name,
                     "workloadKind": workload_kind,
                     "message": detail if isinstance(detail, str) else "Failed to fetch actuator env",
                 })
             except Exception as exc:
+                logger.exception("Config report workload=%s unexpected_error", workload_name)
                 errors.append({
                     "workloadName": workload_name,
                     "workloadKind": workload_kind,
                     "message": str(exc),
                 })
 
+        logger.info("Config report done matched=%s errors=%s", len(matched), len(errors))
         return {
             "namespace": namespace,
             "pattern": pattern,
