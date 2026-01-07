@@ -241,6 +241,25 @@ header h1 {
     gap: 8px;
 }
 
+.report-namespace {
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 12px;
+    background: #ffffff;
+}
+
+.report-namespace-title {
+    font-weight: 700;
+    color: #37474f;
+    margin-bottom: 10px;
+}
+
+.report-namespace-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
 .report-keys {
     margin-top: 10px;
     display: grid;

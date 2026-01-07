@@ -16,6 +16,7 @@ const configProfiles = document.getElementById('config-profiles');
 const configContent = document.getElementById('config-content');
 const configClose = document.getElementById('config-close');
 const reportRun = document.getElementById('report-run');
+const reportRunAll = document.getElementById('report-run-all');
 const reportDownload = document.getElementById('report-download');
 const reportPattern = document.getElementById('report-pattern');
 const reportScope = document.getElementById('report-scope');
@@ -27,6 +28,7 @@ const reportResults = document.getElementById('report-results');
 let currentNamespace = '';
 let workloads = [];
 let configState = null;
+let namespaces = [];
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -57,6 +59,10 @@ document.addEventListener('DOMContentLoaded', () => {
         runSpringConfigReport();
     });
 
+    reportRunAll.addEventListener('click', () => {
+        runSpringConfigReportAll();
+    });
+
     reportDownload.addEventListener('click', () => {
         downloadSpringConfigReport();
     });
@@ -76,19 +82,20 @@ async function loadNamespaces() {
         const response = await fetch(`${API_BASE_URL}/namespaces`);
         if (!response.ok) throw new Error('Failed to fetch namespaces');
         
-        const namespaces = await response.json();
+        const fetchedNamespaces = await response.json();
+        namespaces = fetchedNamespaces.map(ns => ns.name).filter(Boolean);
         
         namespaceSelect.innerHTML = '';
         
         namespaces.forEach(ns => {
             const option = document.createElement('option');
-            option.value = ns.name;
-            option.textContent = ns.name;
+            option.value = ns;
+            option.textContent = ns;
             namespaceSelect.appendChild(option);
         });
 
         if (namespaces.length > 0) {
-            currentNamespace = namespaces[0].name;
+            currentNamespace = namespaces[0];
             namespaceSelect.value = currentNamespace;
             loadWorkloads();
         } else {
@@ -227,16 +234,17 @@ function setReportStatus(message, type = 'info') {
     reportStatus.className = `report-status ${type}`;
 }
 
-function renderReportResults(data) {
+function buildReportCards(data) {
     const matches = data.matched || [];
     const errors = data.errors || [];
     const highlightPattern = reportPattern.value.trim();
     const highlightCaseInsensitive = reportCase.checked;
+    let html = '';
 
     if (matches.length === 0) {
-        reportResults.innerHTML = '<div class="report-empty">No Spring applications matched this pattern.</div>';
+        html += '<div class="report-empty">No Spring applications matched this pattern.</div>';
     } else {
-        reportResults.innerHTML = matches.map(item => {
+        html += matches.map(item => {
             const keys = item.matches || [];
             const kind = item.workloadKind || 'workload';
             const isDc = kind.toLowerCase() === 'deploymentconfig';
@@ -277,13 +285,33 @@ function renderReportResults(data) {
             </div>
         `).join('');
 
-        reportResults.innerHTML += `
+        html += `
             <details class="report-card">
                 <summary>Skipped applications <span class="config-count">${errors.length}</span></summary>
                 <div class="report-keys">${errorHtml}</div>
             </details>
         `;
     }
+
+    return html;
+}
+
+function renderReportResults(data) {
+    reportResults.innerHTML = buildReportCards(data);
+}
+
+function renderMultiNamespaceResults(reports) {
+    if (!reports.length) {
+        reportResults.innerHTML = '<div class="report-empty">No namespaces returned.</div>';
+        return;
+    }
+
+    reportResults.innerHTML = reports.map(report => `
+        <div class="report-namespace">
+            <div class="report-namespace-title">${escapeHtml(report.namespace)}</div>
+            <div class="report-namespace-body">${buildReportCards(report.data)}</div>
+        </div>
+    `).join('');
 }
 
 function highlightMatches(text, pattern, caseInsensitive) {
@@ -350,6 +378,65 @@ async function runSpringConfigReport() {
         setReportStatus(`Error: ${error.message}`, 'error');
         reportResults.innerHTML = '';
     }
+}
+
+async function runSpringConfigReportAll() {
+    const pattern = reportPattern.value.trim();
+    if (!namespaces.length) {
+        setReportStatus('No namespaces available to search.', 'error');
+        return;
+    }
+    if (!pattern) {
+        setReportStatus('Enter a regex pattern to search.', 'error');
+        return;
+    }
+
+    const caseInsensitive = reportCase.checked;
+    const searchIn = reportScope.value || 'value';
+    const query = new URLSearchParams({
+        pattern,
+        caseInsensitive: caseInsensitive ? 'true' : 'false',
+        searchIn,
+    });
+
+    reportResults.innerHTML = '';
+    setReportStatus(`Running report across ${namespaces.length} namespaces (10 at a time)...`, 'info');
+
+    const reports = [];
+    let processed = 0;
+    const concurrency = 10;
+    let index = 0;
+
+    async function worker() {
+        while (index < namespaces.length) {
+            const namespace = namespaces[index];
+            index += 1;
+            try {
+                const response = await fetch(`${API_BASE_URL}/config/${namespace}/report?${query.toString()}`);
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || 'Failed to fetch report');
+                }
+                const data = await response.json();
+                reports.push({ namespace, data });
+            } catch (error) {
+                reports.push({
+                    namespace,
+                    data: { matched: [], errors: [{ workloadName: namespace, workloadKind: 'namespace', message: error.message }] },
+                });
+            } finally {
+                processed += 1;
+                setReportStatus(`Processed ${processed}/${namespaces.length} namespaces...`, 'info');
+            }
+        }
+    }
+
+    const workers = Array.from({ length: Math.min(concurrency, namespaces.length) }, () => worker());
+    await Promise.all(workers);
+
+    reports.sort((a, b) => a.namespace.localeCompare(b.namespace));
+    setReportStatus(`Finished report for ${namespaces.length} namespaces.`, 'success');
+    renderMultiNamespaceResults(reports);
 }
 
 async function downloadSpringConfigReport() {
