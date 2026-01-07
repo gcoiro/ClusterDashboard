@@ -54,6 +54,12 @@ spec:
           value: {{ .Values.backend.configReportConcurrency | quote }}
         - name: CACHE_TTL_SECONDS
           value: {{ .Values.backend.cacheTtlSeconds | quote }}
+        {{- if .Values.redis.enabled }}
+        - name: REDIS_HOST
+          value: {{ include "openshift-dashboard.fullname" . }}-redis
+        - name: REDIS_PORT
+          value: {{ .Values.redis.service.port | quote }}
+        {{- end }}
         volumeMounts:
         - name: backend-app
           mountPath: /tmp/app.py

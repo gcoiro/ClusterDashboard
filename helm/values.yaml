@@ -74,6 +74,23 @@ backend:
     initialDelaySeconds: 10
     periodSeconds: 5
 
+# Redis deployment configuration
+redis:
+  enabled: true
+  image:
+    repository: registry.access.redhat.com/rhscl/redis-5-rhel7
+    tag: "5-48"
+    pullPolicy: IfNotPresent
+  service:
+    port: 6379
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
 # ConfigMap configuration
 configMap:
   kubernetesApiServer: "https://kubernetes.default.svc"

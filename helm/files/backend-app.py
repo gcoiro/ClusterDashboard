@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import json
+import base64
 import csv
 import io
 import subprocess
@@ -14,6 +15,7 @@ import asyncio
 from dotenv import load_dotenv
 import logging
 import time
+import redis
 
 load_dotenv()
 
@@ -31,6 +33,17 @@ KUBERNETES_API_SERVER = os.getenv("KUBERNETES_API_SERVER", "https://kubernetes.d
 KUBERNETES_TOKEN = os.getenv("KUBERNETES_TOKEN", "")
 DEFAULT_SPRING_PORT = os.getenv("DEFAULT_SPRING_PORT", "9150")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+REDIS_HOST = os.getenv("REDIS_HOST")
+try:
+    REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+except ValueError:
+    REDIS_PORT = 6379
+try:
+    REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+except ValueError:
+    REDIS_DB = 0
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
+REDIS_SSL = os.getenv("REDIS_SSL", "false").lower() in ("1", "true", "yes")
 try:
     CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "20"))
 except ValueError:
@@ -58,8 +71,47 @@ if not KUBERNETES_TOKEN:
 logger.info("API server: %s", KUBERNETES_API_SERVER)
 logger.info("Token source: %s", token_source)
 logger.info("Cache TTL: %ss", CACHE_TTL_SECONDS)
+logger.info("Redis enabled: %s", "yes" if REDIS_HOST else "no")
 
 _response_cache = {}
+_redis_client = None
+
+
+def get_redis_client():
+    global _redis_client
+    if not REDIS_HOST:
+        return None
+    if _redis_client is None:
+        _redis_client = redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            db=REDIS_DB,
+            password=REDIS_PASSWORD or None,
+            ssl=REDIS_SSL,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+    return _redis_client
+
+
+def serialize_cache_entry(status_code: int, headers: dict, media_type: str, body: bytes) -> bytes:
+    payload = {
+        "status_code": status_code,
+        "headers": headers,
+        "media_type": media_type,
+        "body": base64.b64encode(body).decode("ascii"),
+    }
+    return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+
+def deserialize_cache_entry(payload: bytes):
+    data = json.loads(payload.decode("utf-8"))
+    return (
+        data.get("status_code", 200),
+        data.get("headers", {}),
+        data.get("media_type"),
+        base64.b64decode(data.get("body", "")),
+    )
 
 
 @app.middleware("http")
@@ -67,13 +119,23 @@ async def response_cache_middleware(request: Request, call_next):
     if CACHE_TTL_SECONDS <= 0 or request.method != "GET" or not request.url.path.startswith("/api/"):
         return await call_next(request)
 
-    cache_key = f"{request.url.path}?{request.url.query}"
-    cached = _response_cache.get(cache_key)
-    if cached:
-        expires_at, status_code, headers, body, media_type = cached
-        if time.time() < expires_at:
-            return Response(content=body, status_code=status_code, headers=headers, media_type=media_type)
-        _response_cache.pop(cache_key, None)
+    cache_key = f"api-cache:{request.url.path}?{request.url.query}"
+    redis_client = get_redis_client()
+    if redis_client is not None:
+        try:
+            cached_payload = redis_client.get(cache_key)
+            if cached_payload:
+                status_code, headers, media_type, body = deserialize_cache_entry(cached_payload)
+                return Response(content=body, status_code=status_code, headers=headers, media_type=media_type)
+        except redis.RedisError as exc:
+            logger.warning("Redis cache read failed: %s", str(exc))
+    else:
+        cached = _response_cache.get(cache_key)
+        if cached:
+            expires_at, status_code, headers, body, media_type = cached
+            if time.time() < expires_at:
+                return Response(content=body, status_code=status_code, headers=headers, media_type=media_type)
+            _response_cache.pop(cache_key, None)
 
     response = await call_next(request)
     if response.status_code != 200:
@@ -84,14 +146,23 @@ async def response_cache_middleware(request: Request, call_next):
         body += chunk
 
     headers = dict(response.headers)
+    headers.pop("content-length", None)
+    headers.pop("transfer-encoding", None)
     headers["Cache-Control"] = f"public, max-age={CACHE_TTL_SECONDS}"
-    _response_cache[cache_key] = (
-        time.time() + CACHE_TTL_SECONDS,
-        response.status_code,
-        headers,
-        body,
-        response.media_type,
-    )
+    if redis_client is not None:
+        try:
+            payload = serialize_cache_entry(response.status_code, headers, response.media_type, body)
+            redis_client.setex(cache_key, CACHE_TTL_SECONDS, payload)
+        except redis.RedisError as exc:
+            logger.warning("Redis cache write failed: %s", str(exc))
+    else:
+        _response_cache[cache_key] = (
+            time.time() + CACHE_TTL_SECONDS,
+            response.status_code,
+            headers,
+            body,
+            response.media_type,
+        )
     return Response(content=body, status_code=response.status_code, headers=headers, media_type=response.media_type)
 
 
