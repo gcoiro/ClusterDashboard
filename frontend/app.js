@@ -26,6 +26,9 @@ const reportScope = document.getElementById('report-scope');
 const reportCase = document.getElementById('report-case');
 const reportStatus = document.getElementById('report-status');
 const reportResults = document.getElementById('report-results');
+const namespaceScaleInput = document.getElementById('namespace-scale-input');
+const namespaceScaleBtn = document.getElementById('namespace-scale-btn');
+const namespaceScaleStatus = document.getElementById('namespace-scale-status');
 
 const REPORT_RETRY_LIMIT = 3;
 const REPORT_RETRY_DELAY_MS = 1000;
@@ -42,11 +45,23 @@ document.addEventListener('DOMContentLoaded', () => {
     
     namespaceSelect.addEventListener('change', (e) => {
         currentNamespace = e.target.value;
+        setNamespaceScaleStatus('', 'info');
         loadWorkloads();
     });
     
     refreshBtn.addEventListener('click', () => {
+        setNamespaceScaleStatus('', 'info');
         loadWorkloads();
+    });
+
+    namespaceScaleBtn.addEventListener('click', () => {
+        scaleNamespaceWorkloads();
+    });
+
+    namespaceScaleInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            scaleNamespaceWorkloads();
+        }
     });
 
     configClose.addEventListener('click', () => {
@@ -250,6 +265,11 @@ function setConfigStatus(message, type = 'info') {
 function setReportStatus(message, type = 'info') {
     reportStatus.textContent = message;
     reportStatus.className = `report-status ${type}`;
+}
+
+function setNamespaceScaleStatus(message, type = 'info') {
+    namespaceScaleStatus.textContent = message;
+    namespaceScaleStatus.className = `namespace-scale-status ${type}`;
 }
 
 function sleep(ms) {
@@ -962,30 +982,34 @@ async function scaleWorkload(kind, namespace, name, replicas) {
     }
     
     try {
-        const endpoint = kind === 'deploymentconfig'
-            ? `${API_BASE_URL}/deploymentconfigs/${namespace}/${name}/scale`
-            : `${API_BASE_URL}/deployments/${namespace}/${name}/scale`;
-
-        const response = await fetch(endpoint, {
-            method: 'PATCH',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ replicas }),
-        });
-        
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.detail || 'Failed to scale workload');
-        }
-        
-        const result = await response.json();
+        const result = await scaleWorkloadRequest(kind, namespace, name, replicas);
         alert(result.message || 'Workload scaled successfully');
         loadWorkloads();
     } catch (error) {
         alert(`Error: ${error.message}`);
         console.error('Error scaling workload:', error);
     }
+}
+
+async function scaleWorkloadRequest(kind, namespace, name, replicas) {
+    const endpoint = kind === 'deploymentconfig'
+        ? `${API_BASE_URL}/deploymentconfigs/${namespace}/${name}/scale`
+        : `${API_BASE_URL}/deployments/${namespace}/${name}/scale`;
+
+    const response = await fetch(endpoint, {
+        method: 'PATCH',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ replicas }),
+    });
+
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to scale workload');
+    }
+
+    return response.json();
 }
 
 // Scale workload with custom value
@@ -999,6 +1023,69 @@ async function scaleWorkloadCustom(kind, namespace, name) {
     }
     
     await scaleWorkload(kind, namespace, name, replicas);
+}
+
+async function scaleNamespaceWorkloads() {
+    if (!currentNamespace) {
+        setNamespaceScaleStatus('Select a namespace first.', 'error');
+        return;
+    }
+
+    const replicas = parseInt(namespaceScaleInput.value, 10);
+    if (isNaN(replicas) || replicas < 0) {
+        setNamespaceScaleStatus('Enter a replica count of 0 or more.', 'error');
+        return;
+    }
+
+    if (!workloads.length) {
+        setNamespaceScaleStatus('No workloads to scale in this namespace.', 'error');
+        return;
+    }
+
+    const targetWorkloads = workloads.filter(workload => workload.name && workload.namespace === currentNamespace);
+    if (!targetWorkloads.length) {
+        setNamespaceScaleStatus('No workloads to scale in this namespace.', 'error');
+        return;
+    }
+
+    if (!confirm(`Scale ${targetWorkloads.length} workload(s) in "${currentNamespace}" to ${replicas} replicas?`)) {
+        return;
+    }
+
+    namespaceScaleBtn.disabled = true;
+    setNamespaceScaleStatus(`Scaling ${targetWorkloads.length} workload(s)...`, 'info');
+
+    const errors = [];
+    let completed = 0;
+    let index = 0;
+    const concurrency = Math.min(5, targetWorkloads.length);
+
+    async function worker() {
+        while (index < targetWorkloads.length) {
+            const workload = targetWorkloads[index];
+            index += 1;
+            try {
+                await scaleWorkloadRequest(workload.kind, workload.namespace, workload.name, replicas);
+            } catch (error) {
+                errors.push(`${workload.name}: ${error.message}`);
+            } finally {
+                completed += 1;
+                setNamespaceScaleStatus(`Scaled ${completed}/${targetWorkloads.length} workload(s)...`, 'info');
+            }
+        }
+    }
+
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+    namespaceScaleBtn.disabled = false;
+
+    if (errors.length) {
+        setNamespaceScaleStatus(`Scaled with ${errors.length} error(s).`, 'error');
+        console.error('Namespace scale errors:', errors);
+    } else {
+        setNamespaceScaleStatus('All workloads scaled successfully.', 'success');
+    }
+
+    loadWorkloads();
 }
 
 // Utility functions

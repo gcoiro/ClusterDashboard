@@ -43,7 +43,20 @@ header h1 {
     flex-wrap: wrap;
 }
 
+.namespace-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 15px;
+}
+
 .namespace-filter label {
+    font-weight: 600;
+    color: #555;
+}
+
+.namespace-actions label {
     font-weight: 600;
     color: #555;
 }
@@ -61,6 +74,32 @@ header h1 {
 .namespace-filter select:focus {
     outline: none;
     border-color: #667eea;
+}
+
+.namespace-scale-input {
+    padding: 10px 15px;
+    border: 2px solid #ddd;
+    border-radius: 5px;
+    font-size: 16px;
+    max-width: 160px;
+}
+
+.namespace-scale-input:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
+.namespace-scale-status {
+    font-size: 0.95em;
+    color: #546e7a;
+}
+
+.namespace-scale-status.success {
+    color: #2e7d32;
+}
+
+.namespace-scale-status.error {
+    color: #c62828;
 }
 
 .btn {
@@ -693,8 +732,18 @@ header h1 {
         align-items: stretch;
     }
 
+    .namespace-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
     .namespace-filter select {
         width: 100%;
+    }
+
+    .namespace-scale-input {
+        width: 100%;
+        max-width: none;
     }
 
     .config-header {

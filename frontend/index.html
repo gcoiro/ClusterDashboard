@@ -18,6 +18,12 @@
                 <select id="namespace-select"></select>
                 <button id="refresh-btn" class="btn btn-primary">Refresh</button>
             </div>
+            <div class="namespace-actions">
+                <label for="namespace-scale-input">Scale all workloads to:</label>
+                <input id="namespace-scale-input" class="namespace-scale-input" type="number" min="0" placeholder="Replicas">
+                <button id="namespace-scale-btn" class="btn btn-primary">Scale namespace</button>
+                <span id="namespace-scale-status" class="namespace-scale-status" role="status"></span>
+            </div>
         </div>
 
         <div id="loading" class="loading">Loading workloads...</div>
