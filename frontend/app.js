@@ -15,6 +15,11 @@ const configViewMode = document.getElementById('config-view-mode');
 const configProfiles = document.getElementById('config-profiles');
 const configContent = document.getElementById('config-content');
 const configClose = document.getElementById('config-close');
+const reportRun = document.getElementById('report-run');
+const reportPattern = document.getElementById('report-pattern');
+const reportCase = document.getElementById('report-case');
+const reportStatus = document.getElementById('report-status');
+const reportResults = document.getElementById('report-results');
 
 // State
 let currentNamespace = '';
@@ -45,6 +50,18 @@ document.addEventListener('DOMContentLoaded', () => {
     configViewMode.addEventListener('change', () => {
         renderConfigSources();
     });
+
+    reportRun.addEventListener('click', () => {
+        runSpringConfigReport();
+    });
+
+    reportPattern.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            runSpringConfigReport();
+        }
+    });
+
+    setReportStatus('Enter a regex pattern and run the report.', 'info');
 });
 
 // Load namespaces
@@ -197,6 +214,93 @@ function hideConfigPanel() {
 function setConfigStatus(message, type = 'info') {
     configStatus.textContent = message;
     configStatus.className = `config-status ${type}`;
+}
+
+function setReportStatus(message, type = 'info') {
+    reportStatus.textContent = message;
+    reportStatus.className = `report-status ${type}`;
+}
+
+function renderReportResults(data) {
+    const matches = data.matched || [];
+    const errors = data.errors || [];
+
+    if (matches.length === 0) {
+        reportResults.innerHTML = '<div class="report-empty">No Spring applications matched this pattern.</div>';
+    } else {
+        reportResults.innerHTML = matches.map(item => {
+            const keys = item.matches || [];
+            const keyHtml = keys.map(keyEntry => `
+                <div class="report-key">
+                    ${escapeHtml(keyEntry.key)}
+                    <span>${escapeHtml(keyEntry.source || 'effective')}</span>
+                </div>
+            `).join('');
+
+            return `
+                <details class="report-card" open>
+                    <summary>
+                        ${escapeHtml(item.workloadName)} (${escapeHtml(item.workloadKind || 'workload')})
+                        <span class="config-count">${keys.length}</span>
+                    </summary>
+                    <div class="report-keys">${keyHtml}</div>
+                </details>
+            `;
+        }).join('');
+    }
+
+    if (errors.length > 0) {
+        const errorHtml = errors.map(err => `
+            <div class="report-key">
+                ${escapeHtml(err.workloadName)} (${escapeHtml(err.workloadKind || 'workload')})
+                <span>${escapeHtml(err.message || 'Failed to fetch config')}</span>
+            </div>
+        `).join('');
+
+        reportResults.innerHTML += `
+            <details class="report-card">
+                <summary>Skipped applications <span class="config-count">${errors.length}</span></summary>
+                <div class="report-keys">${errorHtml}</div>
+            </details>
+        `;
+    }
+}
+
+async function runSpringConfigReport() {
+    const pattern = reportPattern.value.trim();
+    if (!currentNamespace) {
+        setReportStatus('Select a namespace first.', 'error');
+        return;
+    }
+    if (!pattern) {
+        setReportStatus('Enter a regex pattern to search.', 'error');
+        return;
+    }
+
+    const caseInsensitive = reportCase.checked;
+    const query = new URLSearchParams({
+        pattern,
+        caseInsensitive: caseInsensitive ? 'true' : 'false',
+    });
+
+    reportResults.innerHTML = '';
+    setReportStatus('Running report...', 'info');
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/config/${currentNamespace}/report?${query.toString()}`);
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.detail || 'Failed to fetch report');
+        }
+        const data = await response.json();
+        const matchedCount = (data.matched || []).length;
+        setReportStatus(`Found ${matchedCount} application(s) with matching keys.`, 'success');
+        renderReportResults(data);
+    } catch (error) {
+        console.error('Error running config report:', error);
+        setReportStatus(`Error: ${error.message}`, 'error');
+        reportResults.innerHTML = '';
+    }
 }
 
 function extractEnvDetails(payload) {

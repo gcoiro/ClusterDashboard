@@ -7,6 +7,7 @@ import os
 import urllib.request
 import urllib.error
 import urllib.parse
+import re
 from dotenv import load_dotenv
 import logging
 
@@ -318,6 +319,63 @@ def normalize_workload(item, kind_label):
     }
 
 
+def extract_env_details(payload):
+    if not payload or not isinstance(payload, dict):
+        return [], []
+
+    if "propertySources" in payload:
+        return payload.get("propertySources", []) or [], payload.get("activeProfiles", []) or []
+
+    details = payload.get("details")
+    if isinstance(details, dict) and "propertySources" in details:
+        return details.get("propertySources", []) or [], details.get("activeProfiles", []) or []
+
+    components = payload.get("components")
+    if isinstance(components, dict):
+        env = components.get("env")
+        if isinstance(env, dict):
+            env_details = env.get("details")
+            if isinstance(env_details, dict) and "propertySources" in env_details:
+                return env_details.get("propertySources", []) or [], env_details.get("activeProfiles", []) or []
+
+    return [], []
+
+
+def build_effective_key_map(property_sources):
+    key_to_source = {}
+    for source in property_sources:
+        properties = source.get("properties", {}) or {}
+        source_name = source.get("name") or "propertySource"
+        for key in properties.keys():
+            if key in key_to_source:
+                continue
+            key_to_source[key] = source_name
+    return key_to_source
+
+
+def list_workloads(namespace: str):
+    workloads = []
+    try:
+        data = run_oc(["get", "deployments", "-n", namespace, "-o", "json"], expect_json=True)
+        workloads.extend([normalize_workload(item, "deployment") for item in data.get("items", [])])
+    except HTTPException as exc:
+        detail = getattr(exc, "detail", "")
+        if not (isinstance(detail, str) and (
+            is_missing_resource_error(detail, "deployments") or is_missing_resource_error(detail, "deployment")
+        )):
+            raise
+
+    try:
+        data = run_oc(["get", "deploymentconfigs", "-n", namespace, "-o", "json"], expect_json=True)
+        workloads.extend([normalize_workload(item, "deploymentconfig") for item in data.get("items", [])])
+    except HTTPException as exc:
+        detail = getattr(exc, "detail", "")
+        if not (isinstance(detail, str) and is_missing_resource_error(detail, "deploymentconfigs")):
+            raise
+
+    return workloads
+
+
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok"}
@@ -403,6 +461,98 @@ async def scale_deploymentconfig(namespace: str, name: str, request: ScaleReques
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to scale deploymentconfig: {str(exc)}")
+
+
+@app.get("/api/config/{namespace}/report")
+async def get_spring_config_report(namespace: str, pattern: str, caseInsensitive: bool = False):
+    try:
+        if not pattern:
+            raise HTTPException(status_code=400, detail="pattern query parameter is required")
+        try:
+            flags = re.IGNORECASE if caseInsensitive else 0
+            regex = re.compile(pattern, flags=flags)
+        except re.error as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {str(exc)}")
+
+        workloads = list_workloads(namespace)
+        workloads.sort(key=lambda item: item.get("name") or "")
+
+        matched = []
+        errors = []
+
+        for workload in workloads:
+            workload_name = workload.get("name")
+            workload_kind = workload.get("kind")
+            if not workload_name:
+                continue
+
+            try:
+                service = get_service_by_name(namespace, workload_name)
+                if not service:
+                    errors.append({
+                        "workloadName": workload_name,
+                        "workloadKind": workload_kind,
+                        "message": "No matching service found",
+                    })
+                    continue
+
+                port = resolve_service_port(service)
+                if port is None:
+                    errors.append({
+                        "workloadName": workload_name,
+                        "workloadKind": workload_kind,
+                        "message": "Matching service has no port",
+                    })
+                    continue
+
+                service_name = service.get("metadata", {}).get("name") or workload_name
+                service_host = f"{service_name}.{namespace}.svc.cluster.local"
+                actuator_url = f"http://{service_host}:{port}/actuator/env"
+                actuator_payload = fetch_actuator_env(actuator_url)
+
+                property_sources, _ = extract_env_details(actuator_payload)
+                effective_key_map = build_effective_key_map(property_sources)
+
+                matched_keys = [
+                    {"key": key, "source": source}
+                    for key, source in effective_key_map.items()
+                    if regex.search(key)
+                ]
+
+                if matched_keys:
+                    matched_keys.sort(key=lambda item: item["key"])
+                    matched.append({
+                        "workloadName": workload_name,
+                        "workloadKind": workload_kind,
+                        "serviceName": service_name,
+                        "matches": matched_keys,
+                    })
+            except HTTPException as exc:
+                detail = getattr(exc, "detail", "")
+                errors.append({
+                    "workloadName": workload_name,
+                    "workloadKind": workload_kind,
+                    "message": detail if isinstance(detail, str) else "Failed to fetch actuator env",
+                })
+            except Exception as exc:
+                errors.append({
+                    "workloadName": workload_name,
+                    "workloadKind": workload_kind,
+                    "message": str(exc),
+                })
+
+        return {
+            "namespace": namespace,
+            "pattern": pattern,
+            "caseInsensitive": caseInsensitive,
+            "totalWorkloads": len(workloads),
+            "matched": matched,
+            "errors": errors,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to build config report: {str(exc)}")
 
 
 @app.get("/api/config/{namespace}/{workloadName}")

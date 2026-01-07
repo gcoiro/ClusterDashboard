@@ -23,6 +23,25 @@
         <div id="loading" class="loading">Loading workloads...</div>
         <div id="error" class="error" style="display: none;"></div>
 
+        <section id="report-panel" class="report-panel">
+            <div class="report-header">
+                <div>
+                    <h2>Spring Config Report</h2>
+                    <div class="report-meta">Search effective keys across Spring apps in the selected namespace.</div>
+                </div>
+                <button id="report-run" class="btn btn-primary">Run report</button>
+            </div>
+            <div class="report-toolbar">
+                <input id="report-pattern" class="report-input" type="search" placeholder="Regex pattern (e.g. .*cl.bsch.*)">
+                <label class="report-toggle">
+                    <input id="report-case" type="checkbox">
+                    Case-insensitive
+                </label>
+            </div>
+            <div id="report-status" class="report-status"></div>
+            <div id="report-results" class="report-results"></div>
+        </section>
+
         <section id="config-panel" class="config-panel" style="display: none;">
             <div class="config-header">
                 <div>
