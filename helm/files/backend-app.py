@@ -58,7 +58,7 @@ if CONFIG_REPORT_CONCURRENCY < 1:
     CONFIG_REPORT_CONCURRENCY = 1
 logging.basicConfig(
     level=LOG_LEVEL,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    format="%(asctime)s %(levelname)s %(name)s [thread=%(threadName)s:%(thread)d]: %(message)s",
 )
 logger = logging.getLogger("openshift-dashboard")
 token_source = "env"
