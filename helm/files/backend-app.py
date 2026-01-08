@@ -963,7 +963,17 @@ async def get_spring_config_report_csv(
     report = await build_config_report(namespace, pattern, caseInsensitive, searchIn)
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["workloadName", "workloadKind", "key", "value", "source", "matchOn"])
+    writer.writerow([
+        "workloadName",
+        "workloadKind",
+        "key",
+        "value",
+        "source",
+        "matchOn",
+        "justified",
+        "migrationRequired",
+        "comment",
+    ])
 
     for workload in report.get("matched", []):
         for match in workload.get("matches", []):
@@ -974,6 +984,9 @@ async def get_spring_config_report_csv(
                 match.get("value"),
                 match.get("source"),
                 match.get("matchOn"),
+                "",
+                "",
+                "",
             ])
 
     filename = f"spring-config-report-{namespace}.csv"

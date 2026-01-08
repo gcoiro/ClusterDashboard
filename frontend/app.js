@@ -58,6 +58,7 @@ let workloads = [];
 let configState = null;
 let namespaces = [];
 let reportResultsState = null;
+const reportAnnotations = new Map();
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -189,6 +190,62 @@ document.addEventListener('DOMContentLoaded', () => {
             applyReportHistoryEntryByIndex(index);
         });
     }
+
+    reportResults.addEventListener('click', (event) => {
+        const keyCard = event.target.closest('.report-key');
+        if (!keyCard || !reportResults.contains(keyCard)) {
+            return;
+        }
+        if (event.target.closest('input, textarea, label, button, a, select')) {
+            return;
+        }
+        toggleReportKey(keyCard);
+    });
+
+    reportResults.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') {
+            return;
+        }
+        const keyCard = event.target.closest('.report-key');
+        if (!keyCard || !reportResults.contains(keyCard)) {
+            return;
+        }
+        event.preventDefault();
+        toggleReportKey(keyCard);
+    });
+
+    reportResults.addEventListener('change', (event) => {
+        const target = event.target;
+        const annotation = target.closest('.report-annotation');
+        if (!annotation) {
+            return;
+        }
+        const matchId = annotation.dataset.matchId;
+        if (!matchId) {
+            return;
+        }
+        const entry = getReportAnnotation(matchId);
+        if (target.type === 'checkbox') {
+            entry[target.dataset.field] = target.checked;
+        }
+    });
+
+    reportResults.addEventListener('input', (event) => {
+        const target = event.target;
+        if (!target.dataset || target.dataset.field !== 'comment') {
+            return;
+        }
+        const annotation = target.closest('.report-annotation');
+        if (!annotation) {
+            return;
+        }
+        const matchId = annotation.dataset.matchId;
+        if (!matchId) {
+            return;
+        }
+        const entry = getReportAnnotation(matchId);
+        entry.comment = target.value;
+    });
 
     setReportStatus('Enter a regex pattern and run the report.', 'info');
     setReportPostRunVisible(false);
@@ -643,11 +700,33 @@ function buildReportCards(data) {
             const keyHtml = keys.map(keyEntry => {
                 const valueText = keyEntry.value || '';
                 const highlightedValue = highlightMatches(valueText, highlightPattern, highlightCaseInsensitive);
+                const matchId = getReportMatchId(
+                    namespace,
+                    item.workloadName,
+                    keyEntry,
+                );
+                const annotation = getReportAnnotation(matchId);
+                const justifiedChecked = annotation.justified ? 'checked' : '';
+                const migrationChecked = annotation.migrationRequired ? 'checked' : '';
+                const commentValue = annotation.comment ? `value="${escapeHtml(annotation.comment)}"` : '';
                 return `
-                    <div class="report-key">
+                    <div class="report-key" data-match-id="${matchId}" role="button" tabindex="0" aria-expanded="false">
                         <div class="report-key-name">${escapeHtml(keyEntry.key)}</div>
                         <div class="report-value">${highlightedValue}</div>
                         <span>${escapeHtml(keyEntry.source || 'effective')} | match: ${escapeHtml(keyEntry.matchOn || 'value')}</span>
+                        <div class="report-annotation" data-match-id="${matchId}">
+                            <div class="report-annotation-controls">
+                                <label class="report-annotation-option">
+                                    <input type="checkbox" data-field="justified" ${justifiedChecked}>
+                                    Justified
+                                </label>
+                                <label class="report-annotation-option">
+                                    <input type="checkbox" data-field="migrationRequired" ${migrationChecked}>
+                                    Migration required
+                                </label>
+                            </div>
+                            <input class="report-annotation-input" type="text" placeholder="Optional comment" data-field="comment" ${commentValue}>
+                        </div>
                     </div>
                 `;
             }).join('');
@@ -749,6 +828,8 @@ async function runSpringConfigReport() {
         setReportStatus('Select at least one namespace to scan.', 'error');
         return;
     }
+
+    clearReportAnnotations();
 
     const caseInsensitive = reportCase.checked;
     const searchIn = reportScope.value || 'value';
@@ -874,6 +955,16 @@ async function downloadSpringConfigReport() {
 
     setReportStatus('Preparing CSV download...', 'info');
 
+    if (reportResultsState && reportResultsState.mode === 'single') {
+        const reportData = reportResultsState.data;
+        if (reportData && reportData.namespace === targetNamespace) {
+            const csvContent = buildReportCsv(reportData);
+            triggerCsvDownload(csvContent, `spring-config-report-${targetNamespace}.csv`);
+            setReportStatus('CSV downloaded.', 'success');
+            return;
+        }
+    }
+
     try {
         const response = await fetch(`${API_BASE_URL}/config/${targetNamespace}/report.csv?${query.toString()}`);
         if (!response.ok) {
@@ -916,6 +1007,97 @@ function collapseErrorApplications() {
     errorDetails.forEach(detail => {
         detail.open = false;
     });
+}
+
+function toggleReportKey(keyCard) {
+    const isOpen = keyCard.classList.toggle('is-open');
+    keyCard.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
+
+function clearReportAnnotations() {
+    reportAnnotations.clear();
+}
+
+function getReportAnnotation(matchId) {
+    if (!reportAnnotations.has(matchId)) {
+        reportAnnotations.set(matchId, {
+            justified: false,
+            migrationRequired: false,
+            comment: '',
+        });
+    }
+    return reportAnnotations.get(matchId);
+}
+
+function getReportMatchId(namespace, workloadName, keyEntry) {
+    const source = keyEntry.source || 'effective';
+    const matchOn = keyEntry.matchOn || 'value';
+    const value = keyEntry.value || '';
+    const rawId = `${namespace}||${workloadName}||${keyEntry.key}||${source}||${matchOn}||${value}`;
+    return toBase64(rawId);
+}
+
+function toBase64(value) {
+    return btoa(unescape(encodeURIComponent(value)));
+}
+
+function buildReportCsv(reportData) {
+    const rows = [];
+    rows.push([
+        'workloadName',
+        'workloadKind',
+        'key',
+        'value',
+        'source',
+        'matchOn',
+        'justified',
+        'migrationRequired',
+        'comment',
+    ]);
+
+    const namespace = reportData.namespace || '';
+    const matched = reportData.matched || [];
+    matched.forEach(workload => {
+        const workloadName = workload.workloadName || '';
+        const workloadKind = workload.workloadKind || '';
+        (workload.matches || []).forEach(match => {
+            const matchId = getReportMatchId(namespace, workloadName, match);
+            const annotation = getReportAnnotation(matchId);
+            rows.push([
+                workloadName,
+                workloadKind,
+                match.key || '',
+                match.value || '',
+                match.source || '',
+                match.matchOn || '',
+                annotation.justified ? 'true' : 'false',
+                annotation.migrationRequired ? 'true' : 'false',
+                annotation.comment || '',
+            ]);
+        });
+    });
+
+    return rows.map(row => row.map(escapeCsvValue).join(',')).join('\n');
+}
+
+function escapeCsvValue(value) {
+    const text = value == null ? '' : String(value);
+    if (text.includes('"') || text.includes(',') || text.includes('\n')) {
+        return `"${text.replace(/"/g, '""')}"`;
+    }
+    return text;
+}
+
+function triggerCsvDownload(csvContent, filename) {
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
 }
 
 function extractEnvDetails(payload) {

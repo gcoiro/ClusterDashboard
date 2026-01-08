@@ -524,6 +524,18 @@ header h1 {
     font-size: 0.9em;
     color: var(--ink);
     word-break: break-all;
+    cursor: pointer;
+    transition: border 0.2s ease, box-shadow 0.2s ease;
+}
+
+.report-key:focus {
+    outline: 2px solid rgba(15, 118, 110, 0.4);
+    outline-offset: 2px;
+}
+
+.report-key.is-open {
+    border-color: rgba(15, 118, 110, 0.4);
+    box-shadow: 0 6px 16px rgba(15, 23, 42, 0.12);
 }
 
 .report-key-header {
@@ -550,6 +562,49 @@ header h1 {
     font-size: 0.8em;
     color: #64748b;
     margin-top: 4px;
+}
+
+.report-annotation {
+    display: none;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border);
+    flex-direction: column;
+    gap: 8px;
+}
+
+.report-key.is-open .report-annotation {
+    display: flex;
+}
+
+.report-annotation-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+}
+
+.report-annotation-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85em;
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.report-annotation-input {
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    font-size: 0.9em;
+    width: 100%;
+    cursor: text;
+}
+
+.report-annotation-input:focus {
+    outline: none;
+    border-color: var(--primary);
 }
 
 .report-highlight {
