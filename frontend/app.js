@@ -23,6 +23,9 @@ const configProfiles = document.getElementById('config-profiles');
 const configContent = document.getElementById('config-content');
 const configClose = document.getElementById('config-close');
 const reportRun = document.getElementById('report-run');
+const reportSave = document.getElementById('report-save');
+const reportLoad = document.getElementById('report-load');
+const reportLoadInput = document.getElementById('report-load-input');
 
 const reportActions = document.querySelector('.report-actions');
 const reportDownload = document.getElementById('report-download');
@@ -49,6 +52,7 @@ const REPORT_RETRY_LIMIT = 3;
 const REPORT_RETRY_DELAY_MS = 1000;
 const REPORT_HISTORY_KEY = 'springConfigReportHistory';
 const REPORT_HISTORY_LIMIT = 12;
+const REPORT_SNAPSHOT_VERSION = 1;
 const ROLLOUT_POLL_INTERVAL_MS = 10000;
 const ROLLOUT_POLL_LIMIT = 60;
 
@@ -119,6 +123,21 @@ document.addEventListener('DOMContentLoaded', () => {
     reportRun.addEventListener('click', () => {
         runSpringConfigReport();
     });
+
+    if (reportSave) {
+        reportSave.addEventListener('click', () => {
+            downloadReportSnapshot();
+        });
+    }
+
+    if (reportLoad && reportLoadInput) {
+        reportLoad.addEventListener('click', () => {
+            reportLoadInput.click();
+        });
+        reportLoadInput.addEventListener('change', (event) => {
+            handleReportLoad(event);
+        });
+    }
 
     reportDownload.addEventListener('click', () => {
         downloadSpringConfigReport();
@@ -990,6 +1009,228 @@ async function runMultiNamespaceReport(targetNamespaces, query) {
     const signature = lastReportHistorySignature
         || buildHistorySignature(buildHistoryEntryFromSelection(getSelectedReportNamespaces()));
     updateReportHistoryResults(signature, { mode: 'multi', reports });
+}
+
+function buildReportSnapshot() {
+    if (!reportResultsState) {
+        return null;
+    }
+
+    const pattern = reportPattern.value.trim();
+    const caseInsensitive = reportCase.checked;
+    const searchIn = reportScope.value || 'value';
+    const selectedNamespaces = getSelectedReportNamespaces();
+    const report = buildReportPayloadFromState(selectedNamespaces);
+    if (!report) {
+        return null;
+    }
+
+    const namespaces = selectedNamespaces.length
+        ? selectedNamespaces
+        : extractNamespacesFromReportPayload(report);
+    const annotations = collectReportAnnotations(report);
+
+    return {
+        version: REPORT_SNAPSHOT_VERSION,
+        exportedAt: new Date().toISOString(),
+        pattern,
+        caseInsensitive,
+        searchIn,
+        namespaces,
+        report,
+        annotations,
+    };
+}
+
+function buildReportPayloadFromState(selectedNamespaces) {
+    if (!reportResultsState) {
+        return null;
+    }
+    if (reportResultsState.mode === 'single') {
+        const data = cloneReportData(reportResultsState.data || {});
+        if (!data.namespace && selectedNamespaces && selectedNamespaces.length === 1) {
+            data.namespace = selectedNamespaces[0];
+        }
+        return { mode: 'single', data };
+    }
+    if (reportResultsState.mode === 'multi') {
+        const reports = cloneReportData(reportResultsState.reports || []);
+        return { mode: 'multi', reports };
+    }
+    return null;
+}
+
+function cloneReportData(value) {
+    if (!value) {
+        return value;
+    }
+    return JSON.parse(JSON.stringify(value));
+}
+
+function extractNamespacesFromReportPayload(reportPayload) {
+    if (!reportPayload) {
+        return [];
+    }
+    if (reportPayload.mode === 'single') {
+        const namespace = reportPayload.data?.namespace;
+        return namespace ? [namespace] : [];
+    }
+    if (reportPayload.mode === 'multi') {
+        return (reportPayload.reports || [])
+            .map(report => report.namespace)
+            .filter(Boolean);
+    }
+    return [];
+}
+
+function collectReportAnnotations(reportPayload) {
+    const annotations = [];
+    const reportList = reportPayload.mode === 'single'
+        ? [{ namespace: reportPayload.data?.namespace || '', data: reportPayload.data || {} }]
+        : (reportPayload.reports || []);
+
+    reportList.forEach(report => {
+        const namespace = report.namespace || '';
+        const matched = report.data?.matched || [];
+        matched.forEach(workload => {
+            const workloadName = workload.workloadName || '';
+            (workload.matches || []).forEach(match => {
+                const matchId = getReportMatchId(namespace, workloadName, match);
+                const annotation = getReportAnnotation(matchId);
+                const hasComment = Boolean(annotation.comment && annotation.comment.trim());
+                if (annotation.justified || annotation.migrationRequired || hasComment) {
+                    annotations.push({
+                        matchId,
+                        justified: Boolean(annotation.justified),
+                        migrationRequired: Boolean(annotation.migrationRequired),
+                        comment: annotation.comment || '',
+                    });
+                }
+            });
+        });
+    });
+
+    return annotations;
+}
+
+function buildReportSnapshotFileName(snapshot) {
+    const label = snapshot.namespaces && snapshot.namespaces.length === 1
+        ? snapshot.namespaces[0]
+        : 'multi';
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    return `spring-config-report-${label}-${timestamp}.json`;
+}
+
+function triggerJsonDownload(payload, filename) {
+    const blob = new Blob([payload], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+}
+
+function downloadReportSnapshot() {
+    const snapshot = buildReportSnapshot();
+    if (!snapshot) {
+        setReportStatus('Run a report before saving a snapshot.', 'error');
+        return;
+    }
+
+    const filename = buildReportSnapshotFileName(snapshot);
+    triggerJsonDownload(JSON.stringify(snapshot, null, 2), filename);
+    setReportStatus('Saved report snapshot.', 'success');
+}
+
+function applyReportSnapshot(snapshot) {
+    if (!snapshot || !snapshot.report) {
+        setReportStatus('Invalid report file.', 'error');
+        return;
+    }
+
+    reportPattern.value = snapshot.pattern || '';
+    reportCase.checked = Boolean(snapshot.caseInsensitive);
+
+    const scopeValue = snapshot.searchIn || 'value';
+    if (reportScope.querySelector(`option[value="${scopeValue}"]`)) {
+        reportScope.value = scopeValue;
+    } else {
+        reportScope.value = 'value';
+    }
+
+    const namespaceInputs = Array.from(reportNamespaceList.querySelectorAll('input[type="checkbox"]'));
+    const availableNamespaces = namespaceInputs.map(input => input.value);
+    const snapshotNamespaces = Array.isArray(snapshot.namespaces) ? snapshot.namespaces : [];
+    const namespaceSet = new Set(snapshotNamespaces);
+    namespaceInputs.forEach(input => {
+        input.checked = namespaceSet.has(input.value);
+    });
+    updateReportSelectionState();
+
+    const missingNamespaces = snapshotNamespaces.filter(ns => !availableNamespaces.includes(ns));
+
+    clearReportAnnotations();
+    if (Array.isArray(snapshot.annotations)) {
+        snapshot.annotations.forEach(item => {
+            if (!item || !item.matchId) {
+                return;
+            }
+            reportAnnotations.set(item.matchId, {
+                justified: Boolean(item.justified),
+                migrationRequired: Boolean(item.migrationRequired),
+                comment: item.comment ? String(item.comment) : '',
+            });
+        });
+    }
+
+    const reportPayload = snapshot.report;
+    if (reportPayload.mode === 'single' && reportPayload.data) {
+        if (!reportPayload.data.namespace && snapshotNamespaces.length === 1) {
+            reportPayload.data.namespace = snapshotNamespaces[0];
+        }
+        renderReportResults(reportPayload.data);
+    } else if (reportPayload.mode === 'multi') {
+        renderMultiNamespaceResults(reportPayload.reports || []);
+    } else {
+        setReportStatus('Report file missing data.', 'error');
+        reportResults.innerHTML = '';
+        return;
+    }
+
+    setReportPostRunVisible(true);
+
+    if (missingNamespaces.length) {
+        setReportStatus(`Loaded report. Missing namespaces: ${missingNamespaces.join(', ')}.`, 'info');
+    } else {
+        setReportStatus('Loaded saved report.', 'success');
+    }
+}
+
+function handleReportLoad(event) {
+    const input = event.target;
+    const file = input.files && input.files[0];
+    if (!file) {
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+        try {
+            const snapshot = JSON.parse(reader.result);
+            applyReportSnapshot(snapshot);
+        } catch (error) {
+            setReportStatus(`Error: ${error.message}`, 'error');
+        }
+    };
+    reader.onerror = () => {
+        setReportStatus('Failed to read report file.', 'error');
+    };
+    reader.readAsText(file);
+
+    input.value = '';
 }
 
 async function downloadSpringConfigReport() {

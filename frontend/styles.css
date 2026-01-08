@@ -291,6 +291,10 @@ header h1 {
     display: inline-flex;
 }
 
+.report-file-input {
+    display: none;
+}
+
 .report-meta {
     font-size: 0.95em;
     color: var(--muted);
