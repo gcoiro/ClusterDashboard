@@ -58,6 +58,7 @@ let workloads = [];
 let configState = null;
 let namespaces = [];
 let reportResultsState = null;
+let lastReportHistorySignature = null;
 const reportAnnotations = new Map();
 
 // Initialize
@@ -364,7 +365,7 @@ function buildHistorySignature(entry) {
 
 function saveReportHistoryEntry(entry) {
     if (!entry || !entry.pattern) {
-        return;
+        return null;
     }
 
     const normalized = {
@@ -378,6 +379,7 @@ function saveReportHistoryEntry(entry) {
     const history = loadReportHistory().filter(item => buildHistorySignature(item) !== signature);
     history.unshift(normalized);
     writeReportHistory(history.slice(0, REPORT_HISTORY_LIMIT));
+    return signature;
 }
 
 function formatHistoryLabel(entry) {
@@ -396,6 +398,45 @@ function formatHistoryLabel(entry) {
     }
 
     return `${entry.pattern}${namespaceLabel} · ${caseLabel} · ${scopeLabel}`;
+}
+
+function buildHistoryEntryFromSelection(selectedNamespaces) {
+    return {
+        pattern: reportPattern.value.trim(),
+        caseInsensitive: reportCase.checked,
+        searchIn: reportScope.value || 'value',
+        namespaces: Array.isArray(selectedNamespaces) ? selectedNamespaces.slice() : [],
+    };
+}
+
+function updateReportHistoryResults(signature, reportData) {
+    if (!signature || !reportData) {
+        return;
+    }
+    const history = loadReportHistory();
+    const target = history.find(item => buildHistorySignature(item) === signature);
+    if (!target) {
+        return;
+    }
+    target.reportData = reportData;
+    target.reportSavedAt = new Date().toISOString();
+    writeReportHistory(history);
+}
+
+function setReportStatusFromHistory(reportData) {
+    if (!reportData) {
+        return;
+    }
+    if (reportData.mode === 'single') {
+        const matchedCount = (reportData.data?.matched || []).length;
+        const namespace = reportData.data?.namespace || 'namespace';
+        setReportStatus(`Loaded saved report: ${matchedCount} application(s) in ${namespace}.`, 'success');
+        return;
+    }
+    if (reportData.mode === 'multi') {
+        const namespaceCount = reportData.reports?.length || 0;
+        setReportStatus(`Loaded saved report for ${namespaceCount} namespace(s).`, 'success');
+    }
 }
 
 function applyReportHistoryEntry(entry) {
@@ -427,6 +468,17 @@ function applyReportHistoryEntry(entry) {
     }
 
     updateReportSelectionState();
+
+    if (entry.reportData) {
+        clearReportAnnotations();
+        if (entry.reportData.mode === 'single') {
+            renderReportResults(entry.reportData.data);
+        } else if (entry.reportData.mode === 'multi') {
+            renderMultiNamespaceResults(entry.reportData.reports || []);
+        }
+        setReportPostRunVisible(true);
+        setReportStatusFromHistory(entry.reportData);
+    }
 }
 
 function applyReportHistoryEntryByIndex(index) {
@@ -834,7 +886,7 @@ async function runSpringConfigReport() {
     const caseInsensitive = reportCase.checked;
     const searchIn = reportScope.value || 'value';
 
-    saveReportHistoryEntry({
+    lastReportHistorySignature = saveReportHistoryEntry({
         pattern,
         caseInsensitive,
         searchIn,
@@ -873,9 +925,15 @@ async function runSingleNamespaceReport(namespace, query) {
             throw new Error(errorData.detail || 'Failed to fetch report');
         }
         const data = await response.json();
+        if (!data.namespace) {
+            data.namespace = namespace;
+        }
         const matchedCount = (data.matched || []).length;
         setReportStatus(`Found ${matchedCount} application(s) with matching entries in ${namespace}.`, 'success');
         renderReportResults(data);
+        const signature = lastReportHistorySignature
+            || buildHistorySignature(buildHistoryEntryFromSelection(getSelectedReportNamespaces()));
+        updateReportHistoryResults(signature, { mode: 'single', data });
     } catch (error) {
         console.error('Error running config report:', error);
         setReportStatus(`Error: ${error.message}`, 'error');
@@ -929,6 +987,9 @@ async function runMultiNamespaceReport(targetNamespaces, query) {
     reports.sort((a, b) => a.namespace.localeCompare(b.namespace));
     setReportStatus(`Finished report for ${targetNamespaces.length} namespaces.`, 'success');
     renderMultiNamespaceResults(reports);
+    const signature = lastReportHistorySignature
+        || buildHistorySignature(buildHistoryEntryFromSelection(getSelectedReportNamespaces()));
+    updateReportHistoryResults(signature, { mode: 'multi', reports });
 }
 
 async function downloadSpringConfigReport() {
