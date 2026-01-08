@@ -625,6 +625,7 @@ function buildReportCards(data) {
     const errors = data.errors || [];
     const highlightPattern = reportPattern.value.trim();
     const highlightCaseInsensitive = reportCase.checked;
+    const namespace = data.namespace || currentNamespace;
     let html = '';
 
     if (matches.length === 0) {
@@ -666,7 +667,12 @@ function buildReportCards(data) {
     if (errors.length > 0) {
         const errorHtml = errors.map(err => `
             <div class="report-key">
-                ${escapeHtml(err.workloadName)} (${escapeHtml(err.workloadKind || 'workload')})
+                <div class="report-key-header">
+                    <div class="report-key-name">${escapeHtml(err.workloadName)} (${escapeHtml(err.workloadKind || 'workload')})</div>
+                    <button class="btn-action btn-expose" onclick="exposeActuatorEnv('${namespace}', '${err.workloadName}', '${err.workloadKind || ''}', this)">
+                        Expose Actuator Enviroment Endpoint
+                    </button>
+                </div>
                 <span>${escapeHtml(err.message || 'Failed to fetch config')}</span>
             </div>
         `).join('');
@@ -1295,6 +1301,53 @@ async function viewSpringConfig(namespace, workloadName, kindLabel) {
         console.error('Error loading spring config:', error);
         setConfigStatus(`Error: ${error.message}`, 'error');
         configContent.innerHTML = '';
+    }
+}
+
+async function exposeActuatorEnv(namespace, workloadName, workloadKind, buttonEl) {
+    if (!namespace || !workloadName) {
+        alert('Missing namespace or workload name.');
+        return;
+    }
+
+    const kindLabel = workloadKind || 'workload';
+    if (!confirm(`Expose /actuator/env for ${workloadName} (${kindLabel}) in ${namespace}?`)) {
+        return;
+    }
+
+    if (buttonEl) {
+        buttonEl.disabled = true;
+        buttonEl.textContent = 'Exposing...';
+    }
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/config/${namespace}/${workloadName}/expose-actuator-env`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ workloadKind }),
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            const message = errorData.detail?.message || errorData.detail || 'Failed to expose actuator env';
+            throw new Error(message);
+        }
+
+        const result = await response.json();
+        if (buttonEl) {
+            buttonEl.textContent = 'Actuator env exposed';
+            buttonEl.classList.add('is-success');
+        }
+        setReportStatus(result.message || 'Actuator env exposed.', 'success');
+    } catch (error) {
+        console.error('Error exposing actuator env:', error);
+        if (buttonEl) {
+            buttonEl.disabled = false;
+            buttonEl.textContent = 'Expose Actuator Enviroment Endpoint';
+        }
+        setReportStatus(`Error: ${error.message}`, 'error');
     }
 }
 

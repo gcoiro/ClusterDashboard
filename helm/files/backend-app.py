@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
 import json
 import csv
 import io
@@ -424,6 +425,17 @@ def normalize_workload(item, kind_label):
     }
 
 
+def normalize_workload_kind(kind: Optional[str]):
+    if not kind:
+        return None
+    normalized = kind.lower()
+    if normalized in ("deploymentconfig", "deploymentconfigs", "dc"):
+        return "deploymentconfig"
+    if normalized in ("deployment", "deployments", "deploy"):
+        return "deployment"
+    return None
+
+
 def extract_env_details(payload):
     if not payload or not isinstance(payload, dict):
         return [], []
@@ -566,6 +578,10 @@ async def get_deploymentconfigs(namespace: str):
 
 class ScaleRequest(BaseModel):
     replicas: int
+
+
+class ExposeActuatorRequest(BaseModel):
+    workloadKind: Optional[str] = None
 
 
 @app.patch("/api/deployments/{namespace}/{name}/scale")
@@ -858,6 +874,36 @@ async def get_spring_config(namespace: str, workloadName: str):
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to load Spring config: {str(exc)}")
+
+
+@app.post("/api/config/{namespace}/{workloadName}/expose-actuator-env")
+async def expose_actuator_env(namespace: str, workloadName: str, request: Optional[ExposeActuatorRequest] = None):
+    try:
+        workload_kind = normalize_workload_kind(request.workloadKind if request else None)
+        if workload_kind is None:
+            workload_kind, workload = get_workload(namespace, workloadName)
+            if not workload:
+                raise_structured_error(
+                    404,
+                    "workload_not_found",
+                    f"Workload '{workloadName}' not found in namespace '{namespace}'",
+                )
+
+        env_vars = [
+            "MANAGEMENT_ENDPOINT_ENV_ENABLED=true",
+            "MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=env,health",
+        ]
+        logger.info("Exposing actuator env for %s/%s in %s", workload_kind, workloadName, namespace)
+        run_oc(["set", "env", f"{workload_kind}/{workloadName}", "-n", namespace] + env_vars)
+
+        return {
+            "success": True,
+            "message": f"Exposed /actuator/env for {workloadName} ({workload_kind})",
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to expose actuator env: {str(exc)}")
 
 
 if __name__ == "__main__":
