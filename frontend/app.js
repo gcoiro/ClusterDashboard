@@ -321,10 +321,21 @@ function saveReportHistoryEntry(entry) {
 }
 
 function formatHistoryLabel(entry) {
-    const namespacesCount = Array.isArray(entry.namespaces) ? entry.namespaces.length : 0;
+    const namespacesList = Array.isArray(entry.namespaces) ? entry.namespaces : [];
+    const namespacesCount = namespacesList.length;
     const caseLabel = entry.caseInsensitive ? 'ci' : 'cs';
     const scopeLabel = entry.searchIn || 'value';
-    return `${entry.pattern} · ${caseLabel} · ${scopeLabel} · ${namespacesCount} ns`;
+    let namespaceLabel = '';
+
+    if (namespacesCount === 1) {
+        namespaceLabel = ` - ${namespacesList[0]}`;
+    } else if (namespacesCount === 2) {
+        namespaceLabel = ` - ${namespacesList[0]}, ${namespacesList[1]}`;
+    } else if (namespacesCount > 2) {
+        namespaceLabel = ` · ${namespacesCount} ns`;
+    }
+
+    return `${entry.pattern}${namespaceLabel} · ${caseLabel} · ${scopeLabel}`;
 }
 
 function applyReportHistoryEntry(entry) {
@@ -408,7 +419,7 @@ function renderReportHistory() {
     const chipsHtml = history
         .map((entry, index) => `
             <button class="report-history-chip" type="button" data-history-index="${index}">
-                ${escapeHtml(entry.pattern)}
+                ${escapeHtml(formatHistoryLabel(entry))}
             </button>
         `)
         .join('');
