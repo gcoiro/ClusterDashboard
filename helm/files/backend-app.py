@@ -129,6 +129,28 @@ def run_oc(args, expect_json=False):
     return result.stdout
 
 
+def run_oc_with_timeout(args, timeout_seconds=30, expect_json=False):
+    logger.debug("oc %s", " ".join(args))
+    result = subprocess.run(
+        oc_base_args() + args,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        logger.error("oc error (%s): %s", " ".join(args), detail)
+        status = 403 if "forbidden" in detail.lower() else 500
+        raise HTTPException(status_code=status, detail=f"oc error: {detail}")
+    if expect_json:
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            logger.error("oc json parse error (%s): %s", " ".join(args), str(exc))
+            raise HTTPException(status_code=500, detail=f"oc output parse error: {str(exc)}")
+    return result.stdout
+
+
 def run_oc_raw(path: str, expect_json=False):
     logger.debug("oc get --raw %s", path)
     result = subprocess.run(
@@ -295,6 +317,44 @@ def get_running_pod(namespace: str, label_selector: str):
         if status.get("phase") == "Running" and not item.get("metadata", {}).get("deletionTimestamp"):
             return item
     return None
+
+
+def is_pod_ready(pod: dict) -> bool:
+    status = pod.get("status", {}) or {}
+    if status.get("phase") != "Running":
+        return False
+    if pod.get("metadata", {}).get("deletionTimestamp"):
+        return False
+    for condition in status.get("conditions", []) or []:
+        if condition.get("type") == "Ready" and condition.get("status") == "True":
+            return True
+    return False
+
+
+def count_ready_pods(namespace: str, label_selector: str) -> int:
+    if not label_selector:
+        return 0
+    data = run_oc(["get", "pods", "-n", namespace, "-l", label_selector, "-o", "json"], expect_json=True)
+    ready = 0
+    for pod in data.get("items", []) or []:
+        if is_pod_ready(pod):
+            ready += 1
+    return ready
+
+
+def count_pod_restarts(namespace: str, label_selector: str) -> int:
+    if not label_selector:
+        return 0
+    data = run_oc(["get", "pods", "-n", namespace, "-l", label_selector, "-o", "json"], expect_json=True)
+    total = 0
+    for pod in data.get("items", []) or []:
+        statuses = pod.get("status", {}).get("containerStatuses", []) or []
+        for status in statuses:
+            try:
+                total += int(status.get("restartCount", 0))
+            except (TypeError, ValueError):
+                continue
+    return total
 
 
 def get_services_map(namespace: str):
@@ -783,6 +843,116 @@ async def build_config_report(namespace: str, pattern: str, case_insensitive: bo
         raise HTTPException(status_code=500, detail=f"Failed to build config report: {str(exc)}")
 
 
+@app.get("/api/config/{namespace}/{workloadName}/report")
+async def get_spring_config_report_for_workload(
+    namespace: str,
+    workloadName: str,
+    pattern: str,
+    caseInsensitive: bool = False,
+    searchIn: str = "value",
+):
+    try:
+        if not pattern:
+            raise HTTPException(status_code=400, detail="pattern query parameter is required")
+        search_in = (searchIn or "value").lower()
+        if search_in != "value":
+            raise HTTPException(status_code=400, detail="searchIn must be: value")
+        try:
+            flags = re.IGNORECASE if caseInsensitive else 0
+            regex = re.compile(pattern, flags=flags)
+        except re.error as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {str(exc)}")
+
+        workload_kind, workload = get_workload(namespace, workloadName)
+        if not workload:
+            raise_structured_error(
+                404,
+                "workload_not_found",
+                f"Workload '{workloadName}' not found in namespace '{namespace}'",
+            )
+
+        services_map = await asyncio.to_thread(get_services_map, namespace)
+        matched_item, error_item = await asyncio.to_thread(
+            process_report_workload,
+            namespace,
+            {"name": workloadName, "kind": workload_kind},
+            regex,
+            search_in,
+            services_map,
+        )
+
+        return {
+            "namespace": namespace,
+            "pattern": pattern,
+            "caseInsensitive": caseInsensitive,
+            "searchIn": search_in,
+            "totalWorkloads": 1,
+            "matched": [matched_item] if matched_item else [],
+            "errors": [error_item] if error_item else [],
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to build config report: {str(exc)}")
+
+
+@app.get("/api/config/{namespace}/{workloadName}/rollout-status")
+async def get_workload_rollout_status(
+    namespace: str,
+    workloadName: str,
+    workloadKind: Optional[str] = None,
+):
+    try:
+        workload_kind = normalize_workload_kind(workloadKind)
+        workload = None
+        if workload_kind is None:
+            workload_kind, workload = get_workload(namespace, workloadName)
+            if not workload:
+                raise_structured_error(
+                    404,
+                    "workload_not_found",
+                    f"Workload '{workloadName}' not found in namespace '{namespace}'",
+                )
+        if workload is None:
+            _, workload = get_workload(namespace, workloadName)
+            if not workload:
+                raise_structured_error(
+                    404,
+                    "workload_not_found",
+                    f"Workload '{workloadName}' not found in namespace '{namespace}'",
+                )
+
+        fallback_labels = workload.get("spec", {}).get("template", {}).get("metadata", {}).get("labels", {})
+        label_selector = get_workload_selector(workload, fallback_labels)
+        if not label_selector:
+            raise_structured_error(
+                404,
+                "no_label_selector",
+                f"No label selector found for workload '{workloadName}'",
+            )
+
+        desired = workload.get("spec", {}).get("replicas", 0)
+        if desired is None:
+            desired = 0
+        ready = await asyncio.to_thread(count_ready_pods, namespace, label_selector)
+        restarts = await asyncio.to_thread(count_pod_restarts, namespace, label_selector)
+
+        return {
+            "namespace": namespace,
+            "workloadName": workloadName,
+            "workloadKind": workload_kind,
+            "labelSelector": label_selector,
+            "desiredReplicas": desired,
+            "readyReplicas": ready,
+            "totalRestarts": restarts,
+            "ready": ready >= desired,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to check rollout status: {str(exc)}")
+
+
 @app.get("/api/config/{namespace}/report.csv")
 async def get_spring_config_report_csv(
     namespace: str,
@@ -895,6 +1065,8 @@ async def expose_actuator_env(namespace: str, workloadName: str, request: Option
         ]
         logger.info("Exposing actuator env for %s/%s in %s", workload_kind, workloadName, namespace)
         run_oc(["set", "env", f"{workload_kind}/{workloadName}", "-n", namespace] + env_vars)
+        if workload_kind == "deploymentconfig":
+            run_oc(["rollout", "latest", f"{workload_kind}/{workloadName}", "-n", namespace])
 
         return {
             "success": True,

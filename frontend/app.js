@@ -49,12 +49,15 @@ const REPORT_RETRY_LIMIT = 3;
 const REPORT_RETRY_DELAY_MS = 1000;
 const REPORT_HISTORY_KEY = 'springConfigReportHistory';
 const REPORT_HISTORY_LIMIT = 12;
+const ROLLOUT_POLL_INTERVAL_MS = 10000;
+const ROLLOUT_POLL_LIMIT = 60;
 
 // State
 let currentNamespace = '';
 let workloads = [];
 let configState = null;
 let namespaces = [];
+let reportResultsState = null;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -670,7 +673,7 @@ function buildReportCards(data) {
                 <div class="report-key-header">
                     <div class="report-key-name">${escapeHtml(err.workloadName)} (${escapeHtml(err.workloadKind || 'workload')})</div>
                     <button class="btn-action btn-expose" onclick="exposeActuatorEnv('${namespace}', '${err.workloadName}', '${err.workloadKind || ''}', this)">
-                        Expose Actuator Enviroment Endpoint
+                        Expose Actuator
                     </button>
                 </div>
                 <span>${escapeHtml(err.message || 'Failed to fetch config')}</span>
@@ -689,6 +692,7 @@ function buildReportCards(data) {
 }
 
 function renderReportResults(data) {
+    reportResultsState = { mode: 'single', data };
     reportResults.innerHTML = buildReportCards(data);
 }
 
@@ -698,6 +702,7 @@ function renderMultiNamespaceResults(reports) {
         return;
     }
 
+    reportResultsState = { mode: 'multi', reports };
     reportResults.innerHTML = reports.map(report => `
         <details class="report-namespace" data-namespace="${escapeHtml(report.namespace)}" open>
             <summary class="report-namespace-title">${escapeHtml(report.namespace)}</summary>
@@ -1304,6 +1309,48 @@ async function viewSpringConfig(namespace, workloadName, kindLabel) {
     }
 }
 
+function updateReportDataForWorkload(targetData, workloadName, workloadResult) {
+    if (!targetData) {
+        return;
+    }
+    const matchedItem = (workloadResult.matched || [])[0] || null;
+    const errorItem = (workloadResult.errors || [])[0] || null;
+
+    targetData.matched = (targetData.matched || []).filter(item => item.workloadName !== workloadName);
+    targetData.errors = (targetData.errors || []).filter(item => item.workloadName !== workloadName);
+
+    if (matchedItem) {
+        targetData.matched.push(matchedItem);
+        targetData.matched.sort((a, b) => (a.workloadName || '').localeCompare(b.workloadName || ''));
+    } else if (errorItem) {
+        targetData.errors.push(errorItem);
+    }
+}
+
+function applyWorkloadReportUpdate(namespace, workloadName, workloadResult) {
+    if (!reportResultsState) {
+        return;
+    }
+
+    if (reportResultsState.mode === 'single') {
+        if (reportResultsState.data?.namespace !== namespace) {
+            return;
+        }
+        updateReportDataForWorkload(reportResultsState.data, workloadName, workloadResult);
+        renderReportResults(reportResultsState.data);
+        return;
+    }
+
+    if (reportResultsState.mode === 'multi') {
+        const targetReport = reportResultsState.reports.find(report => report.namespace === namespace);
+        if (!targetReport) {
+            return;
+        }
+        updateReportDataForWorkload(targetReport.data, workloadName, workloadResult);
+        renderMultiNamespaceResults(reportResultsState.reports);
+    }
+}
+
 async function exposeActuatorEnv(namespace, workloadName, workloadKind, buttonEl) {
     if (!namespace || !workloadName) {
         alert('Missing namespace or workload name.');
@@ -1317,7 +1364,8 @@ async function exposeActuatorEnv(namespace, workloadName, workloadKind, buttonEl
 
     if (buttonEl) {
         buttonEl.disabled = true;
-        buttonEl.textContent = 'Exposing...';
+        buttonEl.classList.remove('is-success', 'is-error');
+        buttonEl.textContent = 'Standby...';
     }
 
     try {
@@ -1336,18 +1384,130 @@ async function exposeActuatorEnv(namespace, workloadName, workloadKind, buttonEl
         }
 
         const result = await response.json();
-        if (buttonEl) {
-            buttonEl.textContent = 'Actuator env exposed';
-            buttonEl.classList.add('is-success');
-        }
-        setReportStatus(result.message || 'Actuator env exposed.', 'success');
-    } catch (error) {
-        console.error('Error exposing actuator env:', error);
+        setReportStatus(result.message || 'Actuator env exposed. Waiting for pods...', 'info');
+        await waitForWorkloadReady(namespace, workloadName, workloadKind, buttonEl);
         if (buttonEl) {
             buttonEl.disabled = false;
-            buttonEl.textContent = 'Expose Actuator Enviroment Endpoint';
+            buttonEl.textContent = 'Run Report';
+            buttonEl.classList.add('is-success');
+            buttonEl.onclick = () => runSingleWorkloadReport(namespace, workloadName, buttonEl);
+        }
+        setReportStatus('Pods are ready. Run the report for this app.', 'success');
+    } catch (error) {
+        console.error('Error exposing actuator env:', error);
+        if (buttonEl && !buttonEl.classList.contains('is-error')) {
+            buttonEl.disabled = false;
+            buttonEl.textContent = 'Expose Actuator';
         }
         setReportStatus(`Error: ${error.message}`, 'error');
+    }
+}
+
+async function waitForWorkloadReady(namespace, workloadName, workloadKind, buttonEl) {
+    const queryKind = workloadKind ? `workloadKind=${encodeURIComponent(workloadKind)}` : '';
+    let attempts = 0;
+    let baselineRestarts = null;
+
+    return new Promise((resolve, reject) => {
+        const poll = async () => {
+            attempts += 1;
+            try {
+                const response = await fetch(`${API_BASE_URL}/config/${namespace}/${workloadName}/rollout-status?${queryKind}`);
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail?.message || errorData.detail || 'Failed to check rollout status');
+                }
+                const data = await response.json();
+                if (baselineRestarts === null && Number.isFinite(data.totalRestarts)) {
+                    baselineRestarts = data.totalRestarts;
+                }
+                if (baselineRestarts !== null && Number.isFinite(data.totalRestarts) && data.totalRestarts > baselineRestarts) {
+                    clearInterval(timer);
+                    if (buttonEl) {
+                        buttonEl.disabled = false;
+                        buttonEl.textContent = 'Error: Pod Restarted';
+                        buttonEl.classList.add('is-error');
+                    }
+                    setReportStatus('Error: pod restarted during rollout.', 'error');
+                    reject(new Error('Pod restarted during rollout.'));
+                    return;
+                }
+                if (buttonEl) {
+                    const desired = Number.isFinite(data.desiredReplicas) ? data.desiredReplicas : 0;
+                    const ready = Number.isFinite(data.readyReplicas) ? data.readyReplicas : 0;
+                    buttonEl.textContent = `Standby... ${ready}/${desired}`;
+                }
+                if (data.ready) {
+                    clearInterval(timer);
+                    resolve(data);
+                    return;
+                }
+                if (attempts >= ROLLOUT_POLL_LIMIT) {
+                    clearInterval(timer);
+                    reject(new Error('Timed out waiting for pods to become ready.'));
+                }
+            } catch (error) {
+                clearInterval(timer);
+                reject(error);
+            }
+        };
+
+        const timer = setInterval(poll, ROLLOUT_POLL_INTERVAL_MS);
+        poll();
+    });
+}
+
+async function runSingleWorkloadReport(namespace, workloadName, buttonEl) {
+    const pattern = reportPattern.value.trim();
+    if (!pattern) {
+        setReportStatus('Enter a regex pattern to search.', 'error');
+        return;
+    }
+    if (!namespace || !workloadName) {
+        setReportStatus('Missing namespace or workload name.', 'error');
+        return;
+    }
+
+    const caseInsensitive = reportCase.checked;
+    const searchIn = reportScope.value || 'value';
+    const query = new URLSearchParams({
+        pattern,
+        caseInsensitive: caseInsensitive ? 'true' : 'false',
+        searchIn,
+    });
+
+    if (buttonEl) {
+        buttonEl.disabled = true;
+        buttonEl.textContent = 'Running...';
+    }
+
+    try {
+        const response = await fetchWithRetry(
+            `${API_BASE_URL}/config/${namespace}/${workloadName}/report?${query.toString()}`,
+        );
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.detail || 'Failed to fetch report');
+        }
+        const data = await response.json();
+        applyWorkloadReportUpdate(namespace, workloadName, data);
+        const matchedCount = (data.matched || []).length;
+        if (matchedCount > 0) {
+            setReportStatus(`Report loaded for ${workloadName}.`, 'success');
+        } else if ((data.errors || []).length > 0) {
+            const message = data.errors[0]?.message || 'Failed to fetch config';
+            setReportStatus(`Error: ${message}`, 'error');
+        } else {
+            setReportStatus(`No matching entries for ${workloadName}.`, 'info');
+        }
+    } catch (error) {
+        console.error('Error running single workload report:', error);
+        setReportStatus(`Error: ${error.message}`, 'error');
+        if (buttonEl) {
+            buttonEl.disabled = false;
+            buttonEl.textContent = 'Run Report';
+        }
+        return;
     }
 }
 
