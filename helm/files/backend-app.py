@@ -210,36 +210,51 @@ def build_label_selector(selector) -> str:
     return ",".join(parts)
 
 
-def get_workload(namespace: str, name: str):
-    logger.info("Resolving workload %s in namespace %s", name, namespace)
+def build_resource_map(items):
+    resource_map = {}
+    for item in items or []:
+        name = item.get("metadata", {}).get("name")
+        if name:
+            resource_map[name] = item
+    return resource_map
+
+
+def get_deployment_maps(namespace: str):
+    deployments = {}
+    deploymentconfigs = {}
+
     try:
-        deployment = run_oc(["get", "deployment", name, "-n", namespace, "-o", "json"], expect_json=True)
-        return "deployment", deployment
+        data = run_oc(["get", "deployments", "-n", namespace, "-o", "json"], expect_json=True)
+        deployments = build_resource_map(data.get("items", []))
     except HTTPException as exc:
         detail = getattr(exc, "detail", "")
-        if isinstance(detail, str) and (
-            is_not_found_error(detail)
-            or is_missing_resource_error(detail, "deployment")
-            or is_missing_resource_error(detail, "deployments")
-        ):
-            pass
-        else:
+        if not (isinstance(detail, str) and (
+            is_missing_resource_error(detail, "deployments") or is_missing_resource_error(detail, "deployment")
+        )):
             raise
 
     try:
-        deploymentconfig = run_oc(
-            ["get", "deploymentconfig", name, "-n", namespace, "-o", "json"], expect_json=True
-        )
-        return "deploymentconfig", deploymentconfig
+        data = run_oc(["get", "deploymentconfigs", "-n", namespace, "-o", "json"], expect_json=True)
+        deploymentconfigs = build_resource_map(data.get("items", []))
     except HTTPException as exc:
         detail = getattr(exc, "detail", "")
-        if isinstance(detail, str) and (
-            is_not_found_error(detail)
-            or is_missing_resource_error(detail, "deploymentconfigs")
+        if not (isinstance(detail, str) and (
+            is_missing_resource_error(detail, "deploymentconfigs")
             or is_missing_resource_error(detail, "deploymentconfig")
-        ):
-            return None, None
-        raise
+        )):
+            raise
+
+    return deployments, deploymentconfigs
+
+
+def get_workload(namespace: str, name: str):
+    logger.info("Resolving workload %s in namespace %s", name, namespace)
+    deployments, deploymentconfigs = get_deployment_maps(namespace)
+    if name in deployments:
+        return "deployment", deployments[name]
+    if name in deploymentconfigs:
+        return "deploymentconfig", deploymentconfigs[name]
+    return None, None
 
 
 def get_workload_selector(workload: dict, fallback_labels: dict) -> str:
@@ -281,20 +296,25 @@ def get_running_pod(namespace: str, label_selector: str):
     return None
 
 
-def get_service_by_name(namespace: str, service_name: str):
-    if not service_name:
-        return None
+def get_services_map(namespace: str):
     try:
-        return run_oc(["get", "service", service_name, "-n", namespace, "-o", "json"], expect_json=True)
+        data = run_oc(["get", "services", "-n", namespace, "-o", "json"], expect_json=True)
+        return build_resource_map(data.get("items", []))
     except HTTPException as exc:
         detail = getattr(exc, "detail", "")
         if isinstance(detail, str) and (
-            is_not_found_error(detail)
-            or is_missing_resource_error(detail, "services")
-            or is_missing_resource_error(detail, "service")
+            is_missing_resource_error(detail, "services") or is_missing_resource_error(detail, "service")
         ):
-            return None
+            return {}
         raise
+
+
+def get_service_by_name(namespace: str, service_name: str, services_map=None):
+    if not service_name:
+        return None
+    if services_map is None:
+        services_map = get_services_map(namespace)
+    return services_map.get(service_name)
 
 
 def resolve_service_port(service: dict):
@@ -590,7 +610,7 @@ async def get_spring_config_report(
     return await build_config_report(namespace, pattern, caseInsensitive, searchIn)
 
 
-def process_report_workload(namespace: str, workload: dict, regex, search_in: str):
+def process_report_workload(namespace: str, workload: dict, regex, search_in: str, services_map: dict):
     workload_name = workload.get("name")
     workload_kind = workload.get("kind")
     if not workload_name:
@@ -598,7 +618,7 @@ def process_report_workload(namespace: str, workload: dict, regex, search_in: st
     logger.info("Config report workload=%s kind=%s", workload_name, workload_kind)
 
     try:
-        service = get_service_by_name(namespace, workload_name)
+        service = get_service_by_name(namespace, workload_name, services_map)
         if not service:
             logger.warning("Config report skip=%s reason=service_not_found", workload_name)
             return None, {
@@ -703,6 +723,7 @@ async def build_config_report(namespace: str, pattern: str, case_insensitive: bo
             raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {str(exc)}")
 
         workloads = await asyncio.to_thread(list_workloads, namespace)
+        services_map = await asyncio.to_thread(get_services_map, namespace)
         workloads.sort(key=lambda item: item.get("name") or "")
         logger.info("Config report workloads=%s", len(workloads))
 
@@ -712,7 +733,14 @@ async def build_config_report(namespace: str, pattern: str, case_insensitive: bo
 
         async def run_workload(workload: dict):
             async with sem:
-                return await asyncio.to_thread(process_report_workload, namespace, workload, regex, search_in)
+                return await asyncio.to_thread(
+                    process_report_workload,
+                    namespace,
+                    workload,
+                    regex,
+                    search_in,
+                    services_map,
+                )
 
         tasks = [run_workload(workload) for workload in workloads if workload.get("name")]
         results = await asyncio.gather(*tasks)
