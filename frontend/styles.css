@@ -352,6 +352,57 @@ header h1 {
     margin-bottom: 12px;
 }
 
+.report-history {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    background: #f8fafc;
+    margin-bottom: 12px;
+}
+
+.report-history-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.report-history-title {
+    font-weight: 700;
+    color: var(--ink);
+}
+
+.report-history-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.report-history-list {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.report-history-chip {
+    border: 1px solid var(--border);
+    background: white;
+    color: var(--ink);
+    border-radius: 999px;
+    padding: 6px 12px;
+    font-size: 0.85em;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.report-history-chip:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
 .report-input {
     flex: 1;
     min-width: 240px;

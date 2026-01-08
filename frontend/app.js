@@ -37,12 +37,18 @@ const reportResults = document.getElementById('report-results');
 const reportNamespaceList = document.getElementById('report-namespace-list');
 const reportSelectAll = document.getElementById('report-select-all');
 const reportClear = document.getElementById('report-clear');
+const reportHistorySelect = document.getElementById('report-history-select');
+const reportHistoryApply = document.getElementById('report-history-apply');
+const reportHistoryClear = document.getElementById('report-history-clear');
+const reportHistoryList = document.getElementById('report-history-list');
 const namespaceScaleInput = document.getElementById('namespace-scale-input');
 const namespaceScaleBtn = document.getElementById('namespace-scale-btn');
 const namespaceScaleStatus = document.getElementById('namespace-scale-status');
 
 const REPORT_RETRY_LIMIT = 3;
 const REPORT_RETRY_DELAY_MS = 1000;
+const REPORT_HISTORY_KEY = 'springConfigReportHistory';
+const REPORT_HISTORY_LIMIT = 12;
 
 // State
 let currentNamespace = '';
@@ -152,8 +158,38 @@ document.addEventListener('DOMContentLoaded', () => {
         updateReportSelectionState();
     });
 
+    if (reportHistoryApply) {
+        reportHistoryApply.addEventListener('click', () => {
+            applyReportHistorySelection();
+        });
+    }
+
+    if (reportHistorySelect) {
+        reportHistorySelect.addEventListener('change', () => {
+            applyReportHistorySelection();
+        });
+    }
+
+    if (reportHistoryClear) {
+        reportHistoryClear.addEventListener('click', () => {
+            clearReportHistory();
+        });
+    }
+
+    if (reportHistoryList) {
+        reportHistoryList.addEventListener('click', (event) => {
+            const button = event.target.closest('button[data-history-index]');
+            if (!button) {
+                return;
+            }
+            const index = Number(button.dataset.historyIndex);
+            applyReportHistoryEntryByIndex(index);
+        });
+    }
+
     setReportStatus('Enter a regex pattern and run the report.', 'info');
     setReportPostRunVisible(false);
+    renderReportHistory();
 });
 
 // Load namespaces
@@ -232,6 +268,151 @@ function updateReportSelectionState() {
 
     reportSelectAll.checked = allSelected;
     reportSelectAll.indeterminate = someSelected;
+}
+
+function loadReportHistory() {
+    try {
+        const raw = localStorage.getItem(REPORT_HISTORY_KEY);
+        if (!raw) {
+            return [];
+        }
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+        console.warn('Failed to read report history:', error);
+        return [];
+    }
+}
+
+function writeReportHistory(history) {
+    try {
+        localStorage.setItem(REPORT_HISTORY_KEY, JSON.stringify(history));
+    } catch (error) {
+        console.warn('Failed to store report history:', error);
+    }
+}
+
+function buildHistorySignature(entry) {
+    const namespacesList = Array.isArray(entry.namespaces) ? entry.namespaces.slice().sort() : [];
+    return [
+        entry.pattern || '',
+        entry.caseInsensitive ? '1' : '0',
+        entry.searchIn || 'value',
+        namespacesList.join(','),
+    ].join('|');
+}
+
+function saveReportHistoryEntry(entry) {
+    if (!entry || !entry.pattern) {
+        return;
+    }
+
+    const normalized = {
+        pattern: entry.pattern,
+        caseInsensitive: Boolean(entry.caseInsensitive),
+        searchIn: entry.searchIn || 'value',
+        namespaces: Array.isArray(entry.namespaces) ? entry.namespaces.slice() : [],
+        savedAt: new Date().toISOString(),
+    };
+    const signature = buildHistorySignature(normalized);
+    const history = loadReportHistory().filter(item => buildHistorySignature(item) !== signature);
+    history.unshift(normalized);
+    writeReportHistory(history.slice(0, REPORT_HISTORY_LIMIT));
+}
+
+function formatHistoryLabel(entry) {
+    const namespacesCount = Array.isArray(entry.namespaces) ? entry.namespaces.length : 0;
+    const caseLabel = entry.caseInsensitive ? 'ci' : 'cs';
+    const scopeLabel = entry.searchIn || 'value';
+    return `${entry.pattern} · ${caseLabel} · ${scopeLabel} · ${namespacesCount} ns`;
+}
+
+function applyReportHistoryEntry(entry) {
+    if (!entry || !entry.pattern) {
+        return;
+    }
+    reportPattern.value = entry.pattern;
+    reportCase.checked = Boolean(entry.caseInsensitive);
+
+    const scopeValue = entry.searchIn || 'value';
+    if (reportScope.querySelector(`option[value="${scopeValue}"]`)) {
+        reportScope.value = scopeValue;
+    } else {
+        reportScope.value = 'value';
+    }
+
+    const namespaceInputs = Array.from(reportNamespaceList.querySelectorAll('input[type="checkbox"]'));
+    namespaceInputs.forEach(input => {
+        input.checked = false;
+    });
+
+    if (Array.isArray(entry.namespaces) && entry.namespaces.length > 0) {
+        const namespaceSet = new Set(entry.namespaces);
+        namespaceInputs.forEach(input => {
+            if (namespaceSet.has(input.value)) {
+                input.checked = true;
+            }
+        });
+    }
+
+    updateReportSelectionState();
+}
+
+function applyReportHistoryEntryByIndex(index) {
+    const history = loadReportHistory();
+    if (!Number.isFinite(index) || index < 0 || index >= history.length) {
+        return;
+    }
+    applyReportHistoryEntry(history[index]);
+}
+
+function applyReportHistorySelection() {
+    if (!reportHistorySelect) {
+        return;
+    }
+    const index = Number(reportHistorySelect.value);
+    applyReportHistoryEntryByIndex(index);
+}
+
+function clearReportHistory() {
+    writeReportHistory([]);
+    renderReportHistory();
+}
+
+function renderReportHistory() {
+    if (!reportHistorySelect || !reportHistoryList || !reportHistoryApply || !reportHistoryClear) {
+        return;
+    }
+
+    const history = loadReportHistory();
+    reportHistorySelect.innerHTML = '';
+
+    if (history.length === 0) {
+        reportHistorySelect.innerHTML = '<option value="">No saved searches yet</option>';
+        reportHistorySelect.disabled = true;
+        reportHistoryApply.disabled = true;
+        reportHistoryClear.disabled = true;
+        reportHistoryList.innerHTML = '<div class="report-empty">No saved searches yet.</div>';
+        return;
+    }
+
+    reportHistorySelect.disabled = false;
+    reportHistoryApply.disabled = false;
+    reportHistoryClear.disabled = false;
+
+    const optionsHtml = history
+        .map((entry, index) => `<option value="${index}">${escapeHtml(formatHistoryLabel(entry))}</option>`)
+        .join('');
+    reportHistorySelect.innerHTML = optionsHtml;
+
+    const chipsHtml = history
+        .map((entry, index) => `
+            <button class="report-history-chip" type="button" data-history-index="${index}">
+                ${escapeHtml(entry.pattern)}
+            </button>
+        `)
+        .join('');
+    reportHistoryList.innerHTML = chipsHtml;
 }
 
 // Load workloads
@@ -547,10 +728,19 @@ async function runSpringConfigReport() {
         return;
     }
 
-    setReportPostRunVisible(false);
-
     const caseInsensitive = reportCase.checked;
     const searchIn = reportScope.value || 'value';
+
+    saveReportHistoryEntry({
+        pattern,
+        caseInsensitive,
+        searchIn,
+        namespaces: selectedNamespaces,
+    });
+    renderReportHistory();
+
+    setReportPostRunVisible(false);
+
     const query = new URLSearchParams({
         pattern,
         caseInsensitive: caseInsensitive ? 'true' : 'false',
