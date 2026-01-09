@@ -212,11 +212,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     reportResults.addEventListener('click', (event) => {
-        const keyCard = event.target.closest('.report-key');
+        const target = getEventTargetElement(event);
+        if (!target) {
+            return;
+        }
+        const keyCard = target.closest('.report-key');
         if (!keyCard || !reportResults.contains(keyCard)) {
             return;
         }
-        if (event.target.closest('input, textarea, label, button, a, select')) {
+        if (target.closest('.report-annotation, input, textarea, label, button, a, select')) {
             return;
         }
         toggleReportKey(keyCard);
@@ -226,8 +230,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (event.key !== 'Enter' && event.key !== ' ') {
             return;
         }
-        const keyCard = event.target.closest('.report-key');
+        const target = getEventTargetElement(event);
+        if (!target) {
+            return;
+        }
+        const keyCard = target.closest('.report-key');
         if (!keyCard || !reportResults.contains(keyCard)) {
+            return;
+        }
+        if (target.closest('.report-annotation, input, textarea, label, button, a, select')) {
             return;
         }
         event.preventDefault();
@@ -235,7 +246,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     reportResults.addEventListener('change', (event) => {
-        const target = event.target;
+        const target = getEventTargetElement(event);
+        if (!target) {
+            return;
+        }
         const annotation = target.closest('.report-annotation');
         if (!annotation) {
             return;
@@ -247,11 +261,18 @@ document.addEventListener('DOMContentLoaded', () => {
         const entry = getReportAnnotation(matchId);
         if (target.type === 'checkbox') {
             entry[target.dataset.field] = target.checked;
+            const keyCard = annotation.closest('.report-key');
+            if (keyCard) {
+                updateReportKeyState(keyCard, entry);
+            }
         }
     });
 
     reportResults.addEventListener('input', (event) => {
-        const target = event.target;
+        const target = getEventTargetElement(event);
+        if (!target) {
+            return;
+        }
         if (!target.dataset || target.dataset.field !== 'comment') {
             return;
         }
@@ -780,8 +801,12 @@ function buildReportCards(data) {
                 const justifiedChecked = annotation.justified ? 'checked' : '';
                 const migrationChecked = annotation.migrationRequired ? 'checked' : '';
                 const commentValue = annotation.comment ? `value="${escapeHtml(annotation.comment)}"` : '';
+                const keyStateClass = [
+                    annotation.justified ? 'is-justified' : '',
+                    annotation.migrationRequired ? 'is-migration' : '',
+                ].filter(Boolean).join(' ');
                 return `
-                    <div class="report-key" data-match-id="${matchId}" role="button" tabindex="0" aria-expanded="false">
+                    <div class="report-key ${keyStateClass}" data-match-id="${matchId}" role="button" tabindex="0" aria-expanded="false">
                         <div class="report-key-name">${escapeHtml(keyEntry.key)}</div>
                         <div class="report-value">${highlightedValue}</div>
                         <span>${escapeHtml(keyEntry.source || 'effective')} | match: ${escapeHtml(keyEntry.matchOn || 'value')}</span>
@@ -1314,6 +1339,21 @@ function collapseErrorApplications() {
 function toggleReportKey(keyCard) {
     const isOpen = keyCard.classList.toggle('is-open');
     keyCard.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+}
+
+function updateReportKeyState(keyCard, annotation) {
+    keyCard.classList.toggle('is-justified', Boolean(annotation.justified));
+    keyCard.classList.toggle('is-migration', Boolean(annotation.migrationRequired));
+}
+
+function getEventTargetElement(event) {
+    if (event.target instanceof Element) {
+        return event.target;
+    }
+    if (event.target && event.target.parentElement) {
+        return event.target.parentElement;
+    }
+    return null;
 }
 
 function clearReportAnnotations() {

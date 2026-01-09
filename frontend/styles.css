@@ -542,6 +542,21 @@ header h1 {
     box-shadow: 0 6px 16px rgba(15, 23, 42, 0.12);
 }
 
+.report-key.is-migration {
+    border-color: #ef4444;
+    background: #fef2f2;
+}
+
+.report-key.is-justified {
+    border-color: #22c55e;
+    background: #ecfdf3;
+}
+
+.report-key.is-migration.is-justified {
+    border-color: #ef4444;
+    background: #fef2f2;
+}
+
 .report-key-header {
     display: flex;
     align-items: center;
