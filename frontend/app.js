@@ -44,6 +44,11 @@ const reportHistorySelect = document.getElementById('report-history-select');
 const reportHistoryApply = document.getElementById('report-history-apply');
 const reportHistoryClear = document.getElementById('report-history-clear');
 const reportHistoryList = document.getElementById('report-history-list');
+const reportBulkActions = document.getElementById('report-bulk-actions');
+const reportBulkCount = document.getElementById('report-bulk-count');
+const reportBulkJustified = document.getElementById('report-bulk-justified');
+const reportBulkMigration = document.getElementById('report-bulk-migration');
+const reportBulkClear = document.getElementById('report-bulk-clear');
 const namespaceScaleInput = document.getElementById('namespace-scale-input');
 const namespaceScaleBtn = document.getElementById('namespace-scale-btn');
 const namespaceScaleStatus = document.getElementById('namespace-scale-status');
@@ -212,6 +217,24 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    if (reportBulkJustified) {
+        reportBulkJustified.addEventListener('click', () => {
+            applyBulkReportAnnotation('justified');
+        });
+    }
+
+    if (reportBulkMigration) {
+        reportBulkMigration.addEventListener('click', () => {
+            applyBulkReportAnnotation('migrationRequired');
+        });
+    }
+
+    if (reportBulkClear) {
+        reportBulkClear.addEventListener('click', () => {
+            clearReportKeySelection();
+        });
+    }
+
     reportResults.addEventListener('click', (event) => {
         const target = getEventTargetElement(event);
         if (!target) {
@@ -251,6 +274,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!target) {
             return;
         }
+        if (target.classList && target.classList.contains('report-key-select-input')) {
+            const keyCard = target.closest('.report-key');
+            if (!keyCard) {
+                return;
+            }
+            setReportKeySelected(keyCard, target.checked);
+            updateReportBulkSelectionState();
+            return;
+        }
         const annotation = target.closest('.report-annotation');
         if (!annotation) {
             return;
@@ -261,7 +293,24 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         const entry = getReportAnnotation(matchId);
         if (target.type === 'checkbox') {
-            entry[target.dataset.field] = target.checked;
+            const field = target.dataset.field;
+            entry[field] = target.checked;
+            if (target.checked) {
+                if (field === 'justified') {
+                    entry.migrationRequired = false;
+                    const other = annotation.querySelector('input[type="checkbox"][data-field="migrationRequired"]');
+                    if (other) {
+                        other.checked = false;
+                    }
+                }
+                if (field === 'migrationRequired') {
+                    entry.justified = false;
+                    const other = annotation.querySelector('input[type="checkbox"][data-field="justified"]');
+                    if (other) {
+                        other.checked = false;
+                    }
+                }
+            }
             const keyCard = annotation.closest('.report-key');
             if (keyCard) {
                 updateReportKeyState(keyCard, entry);
@@ -291,6 +340,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     setReportStatus('Enter a regex pattern and run the report.', 'info');
     setReportPostRunVisible(false);
+    updateReportBulkSelectionState();
     renderReportHistory();
 });
 
@@ -712,6 +762,9 @@ function setReportPostRunVisible(isVisible) {
         return;
     }
     reportActions.classList.toggle('is-ready', isVisible);
+    if (reportBulkActions) {
+        reportBulkActions.classList.toggle('is-ready', isVisible);
+    }
 }
 
 function setNamespaceScaleStatus(message, type = 'info') {
@@ -813,6 +866,9 @@ function buildReportCards(data) {
                 ].filter(Boolean).join(' ');
                 return `
                     <div class="report-key ${keyStateClass}" data-match-id="${matchId}" role="button" tabindex="0" aria-expanded="false">
+                        <label class="report-key-select">
+                            <input class="report-key-select-input" type="checkbox" aria-label="Select key">
+                        </label>
                         <div class="report-key-name">${escapeHtml(keyEntry.key)}</div>
                         <div class="report-value">${highlightedValue}</div>
                         <span>${escapeHtml(keyEntry.source || 'effective')} | match: ${escapeHtml(keyEntry.matchOn || 'value')}</span>
@@ -875,11 +931,13 @@ function buildReportCards(data) {
 function renderReportResults(data) {
     reportResultsState = { mode: 'single', data };
     reportResults.innerHTML = buildReportCards(data);
+    updateReportBulkSelectionState();
 }
 
 function renderMultiNamespaceResults(reports) {
     if (!reports.length) {
         reportResults.innerHTML = '<div class="report-empty">No namespaces returned.</div>';
+        updateReportBulkSelectionState();
         return;
     }
 
@@ -890,6 +948,7 @@ function renderMultiNamespaceResults(reports) {
             <div class="report-namespace-body">${buildReportCards(report.data)}</div>
         </details>
     `).join('');
+    updateReportBulkSelectionState();
 }
 
 function highlightMatches(text, pattern, caseInsensitive) {
@@ -953,6 +1012,7 @@ async function runSpringConfigReport() {
     });
 
     reportResults.innerHTML = '';
+    updateReportBulkSelectionState();
     if (selectedNamespaces.length === 1) {
         await runSingleNamespaceReport(selectedNamespaces[0], query);
         setReportPostRunVisible(true);
@@ -988,6 +1048,8 @@ async function runSingleNamespaceReport(namespace, query) {
         console.error('Error running config report:', error);
         setReportStatus(`Error: ${error.message}`, 'error');
         reportResults.innerHTML = '';
+        updateReportBulkSelectionState();
+        updateReportBulkSelectionState();
     }
 }
 
@@ -998,6 +1060,7 @@ async function runMultiNamespaceReport(targetNamespaces, query) {
     }
 
     reportResults.innerHTML = '';
+    updateReportBulkSelectionState();
     setReportStatus(`Running report across ${targetNamespaces.length} namespaces (10 at a time)...`, 'info');
 
     const reports = [];
@@ -1351,6 +1414,86 @@ function toggleReportKey(keyCard) {
 function updateReportKeyState(keyCard, annotation) {
     keyCard.classList.toggle('is-justified', Boolean(annotation.justified));
     keyCard.classList.toggle('is-migration', Boolean(annotation.migrationRequired));
+}
+
+function setReportKeySelected(keyCard, isSelected) {
+    if (!keyCard) {
+        return;
+    }
+    keyCard.classList.toggle('is-selected', isSelected);
+    keyCard.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+    const checkbox = keyCard.querySelector('.report-key-select-input');
+    if (checkbox && checkbox.checked !== isSelected) {
+        checkbox.checked = isSelected;
+    }
+}
+
+function clearReportKeySelection() {
+    if (!reportResults) {
+        return;
+    }
+    reportResults.querySelectorAll('.report-key.is-selected').forEach(keyCard => {
+        setReportKeySelected(keyCard, false);
+    });
+    updateReportBulkSelectionState();
+}
+
+function getSelectedReportKeyCards() {
+    if (!reportResults) {
+        return [];
+    }
+    return Array.from(reportResults.querySelectorAll('.report-key.is-selected'));
+}
+
+function updateReportBulkSelectionState() {
+    if (!reportBulkCount) {
+        return;
+    }
+    const selectedCount = getSelectedReportKeyCards().length;
+    reportBulkCount.textContent = `${selectedCount} selected`;
+    const disabled = selectedCount === 0;
+    if (reportBulkJustified) {
+        reportBulkJustified.disabled = disabled;
+    }
+    if (reportBulkMigration) {
+        reportBulkMigration.disabled = disabled;
+    }
+    if (reportBulkClear) {
+        reportBulkClear.disabled = disabled;
+    }
+}
+
+function applyBulkReportAnnotation(field) {
+    const selected = getSelectedReportKeyCards();
+    if (!selected.length) {
+        return;
+    }
+    selected.forEach(keyCard => {
+        const matchId = keyCard.dataset.matchId;
+        if (!matchId) {
+            return;
+        }
+        const entry = getReportAnnotation(matchId);
+        if (field === 'justified') {
+            entry.justified = true;
+            entry.migrationRequired = false;
+        } else if (field === 'migrationRequired') {
+            entry.migrationRequired = true;
+            entry.justified = false;
+        }
+        const annotation = keyCard.querySelector('.report-annotation');
+        if (annotation) {
+            const justifiedInput = annotation.querySelector('input[type="checkbox"][data-field="justified"]');
+            const migrationInput = annotation.querySelector('input[type="checkbox"][data-field="migrationRequired"]');
+            if (justifiedInput) {
+                justifiedInput.checked = Boolean(entry.justified);
+            }
+            if (migrationInput) {
+                migrationInput.checked = Boolean(entry.migrationRequired);
+            }
+        }
+        updateReportKeyState(keyCard, entry);
+    });
 }
 
 function getEventTargetElement(event) {
