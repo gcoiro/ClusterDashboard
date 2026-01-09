@@ -294,6 +294,42 @@ document.addEventListener('DOMContentLoaded', () => {
         const entry = getReportAnnotation(matchId);
         if (target.type === 'checkbox') {
             const field = target.dataset.field;
+            const keyCard = annotation.closest('.report-key');
+            const isSelected = keyCard && keyCard.classList.contains('is-selected');
+            const selectedCards = isSelected ? getSelectedReportKeyCards() : [];
+            if (selectedCards.length > 1) {
+                const shouldCheck = target.checked;
+                selectedCards.forEach(card => {
+                    const cardMatchId = card.dataset.matchId;
+                    if (!cardMatchId) {
+                        return;
+                    }
+                    const cardEntry = getReportAnnotation(cardMatchId);
+                    cardEntry[field] = shouldCheck;
+                    if (shouldCheck) {
+                        if (field === 'justified') {
+                            cardEntry.migrationRequired = false;
+                        }
+                        if (field === 'migrationRequired') {
+                            cardEntry.justified = false;
+                        }
+                    }
+                    const cardAnnotation = card.querySelector('.report-annotation');
+                    if (cardAnnotation) {
+                        const justifiedInput = cardAnnotation.querySelector('input[type="checkbox"][data-field="justified"]');
+                        const migrationInput = cardAnnotation.querySelector('input[type="checkbox"][data-field="migrationRequired"]');
+                        if (justifiedInput) {
+                            justifiedInput.checked = Boolean(cardEntry.justified);
+                        }
+                        if (migrationInput) {
+                            migrationInput.checked = Boolean(cardEntry.migrationRequired);
+                        }
+                    }
+                    updateReportKeyState(card, cardEntry);
+                });
+                return;
+            }
+
             entry[field] = target.checked;
             if (target.checked) {
                 if (field === 'justified') {
@@ -311,7 +347,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             }
-            const keyCard = annotation.closest('.report-key');
             if (keyCard) {
                 updateReportKeyState(keyCard, entry);
             }
