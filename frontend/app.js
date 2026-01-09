@@ -64,6 +64,7 @@ let namespaces = [];
 let reportResultsState = null;
 let lastReportHistorySignature = null;
 const reportAnnotations = new Map();
+const reportAnnotationSeeds = new Map();
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -797,7 +798,12 @@ function buildReportCards(data) {
                     item.workloadName,
                     keyEntry,
                 );
-                const annotation = getReportAnnotation(matchId);
+                const stableId = getReportStableId(
+                    namespace,
+                    item.workloadName,
+                    keyEntry,
+                );
+                const annotation = getReportAnnotation(matchId, stableId);
                 const justifiedChecked = annotation.justified ? 'checked' : '';
                 const migrationChecked = annotation.migrationRequired ? 'checked' : '';
                 const commentValue = annotation.comment ? `value="${escapeHtml(annotation.comment)}"` : '';
@@ -925,7 +931,7 @@ async function runSpringConfigReport() {
         return;
     }
 
-    clearReportAnnotations();
+    clearReportMatchAnnotations();
 
     const caseInsensitive = reportCase.checked;
     const searchIn = reportScope.value || 'value';
@@ -1212,6 +1218,7 @@ function applyReportSnapshot(snapshot) {
     }
 
     const reportPayload = snapshot.report;
+    seedReportAnnotationSeeds(reportPayload);
     if (reportPayload.mode === 'single' && reportPayload.data) {
         if (!reportPayload.data.namespace && snapshotNamespaces.length === 1) {
             reportPayload.data.namespace = snapshotNamespaces[0];
@@ -1358,17 +1365,31 @@ function getEventTargetElement(event) {
 
 function clearReportAnnotations() {
     reportAnnotations.clear();
+    reportAnnotationSeeds.clear();
 }
 
-function getReportAnnotation(matchId) {
+function clearReportMatchAnnotations() {
+    reportAnnotations.clear();
+}
+
+function getReportAnnotation(matchId, stableId) {
     if (!reportAnnotations.has(matchId)) {
+        if (stableId && reportAnnotationSeeds.has(stableId)) {
+            const seed = reportAnnotationSeeds.get(stableId);
+            reportAnnotations.set(matchId, seed);
+            return seed;
+        }
         reportAnnotations.set(matchId, {
             justified: false,
             migrationRequired: false,
             comment: '',
         });
     }
-    return reportAnnotations.get(matchId);
+    const entry = reportAnnotations.get(matchId);
+    if (stableId && entry && !reportAnnotationSeeds.has(stableId)) {
+        reportAnnotationSeeds.set(stableId, entry);
+    }
+    return entry;
 }
 
 function getReportMatchId(namespace, workloadName, keyEntry) {
@@ -1377,6 +1398,40 @@ function getReportMatchId(namespace, workloadName, keyEntry) {
     const value = keyEntry.value || '';
     const rawId = `${namespace}||${workloadName}||${keyEntry.key}||${source}||${matchOn}||${value}`;
     return toBase64(rawId);
+}
+
+function getReportStableId(namespace, workloadName, keyEntry) {
+    const source = keyEntry.source || 'effective';
+    const matchOn = keyEntry.matchOn || 'value';
+    const rawId = `${namespace}||${workloadName}||${keyEntry.key}||${source}||${matchOn}`;
+    return toBase64(rawId);
+}
+
+function seedReportAnnotationSeeds(reportPayload) {
+    if (!reportPayload) {
+        return;
+    }
+    const reportList = reportPayload.mode === 'single'
+        ? [{ namespace: reportPayload.data?.namespace || '', data: reportPayload.data || {} }]
+        : (reportPayload.reports || []);
+
+    reportList.forEach(report => {
+        const namespace = report.namespace || '';
+        const matched = report.data?.matched || [];
+        matched.forEach(workload => {
+            const workloadName = workload.workloadName || '';
+            (workload.matches || []).forEach(match => {
+                const matchId = getReportMatchId(namespace, workloadName, match);
+                if (!reportAnnotations.has(matchId)) {
+                    return;
+                }
+                const stableId = getReportStableId(namespace, workloadName, match);
+                if (!reportAnnotationSeeds.has(stableId)) {
+                    reportAnnotationSeeds.set(stableId, reportAnnotations.get(matchId));
+                }
+            });
+        });
+    });
 }
 
 function toBase64(value) {
