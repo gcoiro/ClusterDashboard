@@ -407,6 +407,60 @@ def detect_pod_port(pod: dict):
     return None
 
 
+def resolve_named_port(port_value, container: dict):
+    if isinstance(port_value, int) and port_value > 0:
+        return port_value
+    if isinstance(port_value, str):
+        if port_value.isdigit():
+            return int(port_value)
+        for port_entry in container.get("ports", []) or []:
+            if port_entry.get("name") == port_value:
+                container_port = port_entry.get("containerPort")
+                if isinstance(container_port, int) and container_port > 0:
+                    return container_port
+    return None
+
+
+def resolve_probe_port(workload: dict):
+    if not workload or not isinstance(workload, dict):
+        return None
+    template = workload.get("spec", {}).get("template", {}) or {}
+    containers = template.get("spec", {}).get("containers", []) or []
+
+    def probe_port(container: dict, probe: dict):
+        if not isinstance(probe, dict):
+            return None
+        for key in ("httpGet", "tcpSocket"):
+            probe_spec = probe.get(key)
+            if isinstance(probe_spec, dict):
+                port_value = probe_spec.get("port")
+                port = resolve_named_port(port_value, container)
+                if port:
+                    return port
+        return None
+
+    for container in containers:
+        port = probe_port(container, container.get("readinessProbe"))
+        if port:
+            return port
+    for container in containers:
+        port = probe_port(container, container.get("livenessProbe"))
+        if port:
+            return port
+    return None
+
+
+def get_workload_resource(workload: dict):
+    if not isinstance(workload, dict):
+        return None
+    resource = workload.get("resource")
+    if isinstance(resource, dict):
+        return resource
+    if "spec" in workload:
+        return workload
+    return None
+
+
 def fetch_actuator_env(url: str):
     logger.info("Fetching actuator env %s", url)
     if CACHE_TTL_SECONDS > 0:
@@ -566,7 +620,10 @@ def list_workloads(namespace: str):
     workloads = []
     try:
         data = run_oc(["get", "deployments", "-n", namespace, "-o", "json"], expect_json=True)
-        workloads.extend([normalize_workload(item, "deployment") for item in data.get("items", [])])
+        for item in data.get("items", []) or []:
+            entry = normalize_workload(item, "deployment")
+            entry["resource"] = item
+            workloads.append(entry)
     except HTTPException as exc:
         detail = getattr(exc, "detail", "")
         if not (isinstance(detail, str) and (
@@ -576,7 +633,10 @@ def list_workloads(namespace: str):
 
     try:
         data = run_oc(["get", "deploymentconfigs", "-n", namespace, "-o", "json"], expect_json=True)
-        workloads.extend([normalize_workload(item, "deploymentconfig") for item in data.get("items", [])])
+        for item in data.get("items", []) or []:
+            entry = normalize_workload(item, "deploymentconfig")
+            entry["resource"] = item
+            workloads.append(entry)
     except HTTPException as exc:
         detail = getattr(exc, "detail", "")
         if not (isinstance(detail, str) and is_missing_resource_error(detail, "deploymentconfigs")):
@@ -694,6 +754,7 @@ def process_report_workload(namespace: str, workload: dict, regex, search_in: st
     logger.info("Config report workload=%s kind=%s", workload_name, workload_kind)
 
     try:
+        workload_resource = get_workload_resource(workload)
         service = get_service_by_name(namespace, workload_name, services_map)
         if not service:
             logger.warning("Config report skip=%s reason=service_not_found", workload_name)
@@ -703,7 +764,9 @@ def process_report_workload(namespace: str, workload: dict, regex, search_in: st
                 "message": "No matching service found",
             }
 
-        port = resolve_service_port(service)
+        port = resolve_probe_port(workload_resource)
+        if port is None:
+            port = resolve_service_port(service)
         if port is None:
             logger.warning("Config report skip=%s reason=service_port_missing", workload_name)
             return None, {
@@ -875,7 +938,7 @@ async def get_spring_config_report_for_workload(
         matched_item, error_item = await asyncio.to_thread(
             process_report_workload,
             namespace,
-            {"name": workloadName, "kind": workload_kind},
+            {"name": workloadName, "kind": workload_kind, "resource": workload},
             regex,
             search_in,
             services_map,
@@ -1033,7 +1096,9 @@ async def get_spring_config(namespace: str, workloadName: str):
         if not service_name:
             raise_structured_error(500, "service_missing_name", "Matching service has no name")
 
-        port = resolve_service_port(service)
+        port = resolve_probe_port(workload)
+        if port is None:
+            port = resolve_service_port(service)
         if port is None:
             raise_structured_error(500, "service_port_missing", "Matching service has no port")
         logger.info("Using service %s on port %s", service_name, port)
