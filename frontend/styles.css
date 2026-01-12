@@ -1018,6 +1018,16 @@ header h1 {
     color: white;
 }
 
+.btn-retry {
+    background: #2563eb;
+    color: white;
+}
+
+.btn-retry:hover {
+    background: #1d4ed8;
+    transform: translateY(-1px);
+}
+
 .btn-expose:hover {
     background: #0284c7;
     transform: translateY(-1px);

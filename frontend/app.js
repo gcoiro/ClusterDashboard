@@ -934,17 +934,29 @@ function buildReportCards(data) {
     }
 
     if (errors.length > 0) {
-        const errorHtml = errors.map(err => `
-            <div class="report-key">
-                <div class="report-key-header">
-                    <div class="report-key-name">${escapeHtml(err.workloadName)} (${escapeHtml(err.workloadKind || 'workload')})</div>
-                    <button class="btn-action btn-expose" onclick="exposeActuatorEnv('${namespace}', '${err.workloadName}', '${err.workloadKind || ''}', this)">
-                        Expose Actuator
+        const errorHtml = errors.map(err => {
+            const kindLabel = err.workloadKind || 'workload';
+            const canRetry = err.workloadKind !== 'namespace' && err.workloadName;
+            const retryButton = canRetry
+                ? `
+                    <button class="btn-action btn-retry" onclick="retrySkippedApplication('${namespace}', '${err.workloadName}', '${err.workloadKind || ''}', this)">
+                        Retry
                     </button>
+                `
+                : '';
+            return `
+                <div class="report-key">
+                    <div class="report-key-header">
+                        <div class="report-key-name">${escapeHtml(err.workloadName)} (${escapeHtml(kindLabel)})</div>
+                        ${retryButton}
+                        <button class="btn-action btn-expose" onclick="exposeActuatorEnv('${namespace}', '${err.workloadName}', '${err.workloadKind || ''}', this)">
+                            Expose Actuator
+                        </button>
+                    </div>
+                    <span>${escapeHtml(err.message || 'Failed to fetch config')}</span>
                 </div>
-                <span>${escapeHtml(err.message || 'Failed to fetch config')}</span>
-            </div>
-        `).join('');
+            `;
+        }).join('');
 
         html += `
             <details class="report-card" data-kind="error" data-error="true">
@@ -2087,6 +2099,23 @@ async function exposeActuatorEnv(namespace, workloadName, workloadKind, buttonEl
     }
 }
 
+async function retrySkippedApplication(namespace, workloadName, workloadKind, buttonEl) {
+    if (!namespace || !workloadName) {
+        setReportStatus('Missing namespace or workload name.', 'error');
+        return;
+    }
+
+    if (buttonEl) {
+        buttonEl.classList.remove('is-error', 'is-success');
+    }
+
+    await runSingleWorkloadReport(namespace, workloadName, buttonEl, {
+        defaultLabel: 'Retry',
+        runningLabel: 'Retrying...',
+        errorLabel: 'Retry',
+    });
+}
+
 async function waitForWorkloadReady(namespace, workloadName, workloadKind, buttonEl) {
     const queryKind = workloadKind ? `workloadKind=${encodeURIComponent(workloadKind)}` : '';
     let attempts = 0;
@@ -2141,7 +2170,7 @@ async function waitForWorkloadReady(namespace, workloadName, workloadKind, butto
     });
 }
 
-async function runSingleWorkloadReport(namespace, workloadName, buttonEl) {
+async function runSingleWorkloadReport(namespace, workloadName, buttonEl, options = {}) {
     const pattern = reportPattern.value.trim();
     if (!pattern) {
         setReportStatus('Enter a regex pattern to search.', 'error');
@@ -2160,9 +2189,13 @@ async function runSingleWorkloadReport(namespace, workloadName, buttonEl) {
         searchIn,
     });
 
+    const defaultLabel = options.defaultLabel || 'Run Report';
+    const runningLabel = options.runningLabel || 'Running...';
+    const errorLabel = options.errorLabel || defaultLabel;
+
     if (buttonEl) {
         buttonEl.disabled = true;
-        buttonEl.textContent = 'Running...';
+        buttonEl.textContent = runningLabel;
     }
 
     try {
@@ -2184,12 +2217,16 @@ async function runSingleWorkloadReport(namespace, workloadName, buttonEl) {
         } else {
             setReportStatus(`No matching entries for ${workloadName}.`, 'info');
         }
+        if (buttonEl) {
+            buttonEl.disabled = false;
+            buttonEl.textContent = defaultLabel;
+        }
     } catch (error) {
         console.error('Error running single workload report:', error);
         setReportStatus(`Error: ${error.message}`, 'error');
         if (buttonEl) {
             buttonEl.disabled = false;
-            buttonEl.textContent = 'Run Report';
+            buttonEl.textContent = errorLabel;
         }
         return;
     }
