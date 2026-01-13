@@ -47,6 +47,21 @@ body::after {
     z-index: -1;
 }
 
+.app-version {
+    position: fixed;
+    left: 16px;
+    bottom: 16px;
+    font-size: 0.85rem;
+    color: var(--muted);
+    background: rgba(255, 255, 255, 0.7);
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(226, 232, 240, 0.8);
+    box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+    pointer-events: none;
+    z-index: 2;
+}
+
 .container {
     max-width: 1400px;
     margin: 0 auto;
