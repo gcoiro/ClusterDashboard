@@ -593,6 +593,24 @@ header h1 {
     margin-top: 4px;
 }
 
+.report-inline-status {
+    margin-top: 6px;
+    font-size: 0.85em;
+    color: var(--muted);
+}
+
+.report-inline-status.is-success {
+    color: #16a34a;
+}
+
+.report-inline-status.is-error {
+    color: #dc2626;
+}
+
+.report-inline-status.is-info {
+    color: #0284c7;
+}
+
 .report-annotation {
     display: none;
     margin-top: 8px;

@@ -939,7 +939,7 @@ function buildReportCards(data) {
             const canRetry = err.workloadKind !== 'namespace' && err.workloadName;
             const retryButton = canRetry
                 ? `
-                    <button class="btn-action btn-retry" onclick="retrySkippedApplication('${namespace}', '${err.workloadName}', '${err.workloadKind || ''}', this)">
+                    <button type="button" class="btn-action btn-retry" onclick="retrySkippedApplication('${namespace}', '${err.workloadName}', '${err.workloadKind || ''}', this)">
                         Retry
                     </button>
                 `
@@ -949,10 +949,11 @@ function buildReportCards(data) {
                     <div class="report-key-header">
                         <div class="report-key-name">${escapeHtml(err.workloadName)} (${escapeHtml(kindLabel)})</div>
                         ${retryButton}
-                        <button class="btn-action btn-expose" onclick="exposeActuatorEnv('${namespace}', '${err.workloadName}', '${err.workloadKind || ''}', this)">
+                        <button type="button" class="btn-action btn-expose" onclick="exposeActuatorEnv('${namespace}', '${err.workloadName}', '${err.workloadKind || ''}', this)">
                             Expose Actuator
                         </button>
                     </div>
+                    <div class="report-inline-status" data-inline-status="true"></div>
                     <span>${escapeHtml(err.message || 'Failed to fetch config')}</span>
                 </div>
             `;
@@ -971,7 +972,9 @@ function buildReportCards(data) {
 
 function renderReportResults(data) {
     reportResultsState = { mode: 'single', data };
-    reportResults.innerHTML = buildReportCards(data);
+    preserveReportScroll(() => {
+        reportResults.innerHTML = buildReportCards(data);
+    });
 }
 
 function renderMultiNamespaceResults(reports) {
@@ -981,12 +984,14 @@ function renderMultiNamespaceResults(reports) {
     }
 
     reportResultsState = { mode: 'multi', reports };
-    reportResults.innerHTML = reports.map(report => `
-        <details class="report-namespace" data-namespace="${escapeHtml(report.namespace)}" open>
-            <summary class="report-namespace-title">${escapeHtml(report.namespace)}</summary>
-            <div class="report-namespace-body">${buildReportCards(report.data)}</div>
-        </details>
-    `).join('');
+    preserveReportScroll(() => {
+        reportResults.innerHTML = reports.map(report => `
+            <details class="report-namespace" data-namespace="${escapeHtml(report.namespace)}" open>
+                <summary class="report-namespace-title">${escapeHtml(report.namespace)}</summary>
+                <div class="report-namespace-body">${buildReportCards(report.data)}</div>
+            </details>
+        `).join('');
+    });
 }
 
 function highlightMatches(text, pattern, caseInsensitive) {
@@ -2109,10 +2114,16 @@ async function retrySkippedApplication(namespace, workloadName, workloadKind, bu
         buttonEl.classList.remove('is-error', 'is-success');
     }
 
+    const statusEl = buttonEl
+        ? buttonEl.closest('.report-key')?.querySelector('[data-inline-status="true"]')
+        : null;
+
     await runSingleWorkloadReport(namespace, workloadName, buttonEl, {
         defaultLabel: 'Retry',
         runningLabel: 'Retrying...',
         errorLabel: 'Retry',
+        suppressGlobalStatus: true,
+        inlineStatusEl: statusEl,
     });
 }
 
@@ -2173,11 +2184,11 @@ async function waitForWorkloadReady(namespace, workloadName, workloadKind, butto
 async function runSingleWorkloadReport(namespace, workloadName, buttonEl, options = {}) {
     const pattern = reportPattern.value.trim();
     if (!pattern) {
-        setReportStatus('Enter a regex pattern to search.', 'error');
+        reportSingleStatus(options, 'Enter a regex pattern to search.', 'error');
         return;
     }
     if (!namespace || !workloadName) {
-        setReportStatus('Missing namespace or workload name.', 'error');
+        reportSingleStatus(options, 'Missing namespace or workload name.', 'error');
         return;
     }
 
@@ -2197,6 +2208,7 @@ async function runSingleWorkloadReport(namespace, workloadName, buttonEl, option
         buttonEl.disabled = true;
         buttonEl.textContent = runningLabel;
     }
+    reportSingleStatus(options, runningLabel, 'info');
 
     try {
         const response = await fetchWithRetry(
@@ -2210,12 +2222,12 @@ async function runSingleWorkloadReport(namespace, workloadName, buttonEl, option
         applyWorkloadReportUpdate(namespace, workloadName, data);
         const matchedCount = (data.matched || []).length;
         if (matchedCount > 0) {
-            setReportStatus(`Report loaded for ${workloadName}.`, 'success');
+            reportSingleStatus(options, `Report loaded for ${workloadName}.`, 'success');
         } else if ((data.errors || []).length > 0) {
             const message = data.errors[0]?.message || 'Failed to fetch config';
-            setReportStatus(`Error: ${message}`, 'error');
+            reportSingleStatus(options, `Error: ${message}`, 'error');
         } else {
-            setReportStatus(`No matching entries for ${workloadName}.`, 'info');
+            reportSingleStatus(options, `No matching entries for ${workloadName}.`, 'info');
         }
         if (buttonEl) {
             buttonEl.disabled = false;
@@ -2223,12 +2235,42 @@ async function runSingleWorkloadReport(namespace, workloadName, buttonEl, option
         }
     } catch (error) {
         console.error('Error running single workload report:', error);
-        setReportStatus(`Error: ${error.message}`, 'error');
+        reportSingleStatus(options, `Error: ${error.message}`, 'error');
         if (buttonEl) {
             buttonEl.disabled = false;
             buttonEl.textContent = errorLabel;
         }
         return;
+    }
+}
+
+function preserveReportScroll(renderFn) {
+    const windowScroll = window.scrollY;
+    const containerScroll = reportResults ? reportResults.scrollTop : 0;
+    renderFn();
+    if (reportResults) {
+        reportResults.scrollTop = containerScroll;
+    }
+    window.scrollTo(0, windowScroll);
+}
+
+function reportSingleStatus(options, message, statusType) {
+    if (!options || !options.suppressGlobalStatus) {
+        setReportStatus(message, statusType);
+    }
+    if (options && options.inlineStatusEl) {
+        setInlineStatus(options.inlineStatusEl, message, statusType);
+    }
+}
+
+function setInlineStatus(statusEl, message, statusType) {
+    if (!statusEl) {
+        return;
+    }
+    statusEl.textContent = message || '';
+    statusEl.classList.remove('is-info', 'is-success', 'is-error');
+    if (statusType) {
+        statusEl.classList.add(`is-${statusType}`);
     }
 }
 
