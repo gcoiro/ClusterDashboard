@@ -969,6 +969,22 @@ function buildReportCards(data) {
         const errorHtml = errors.map(err => {
             const kindLabel = err.workloadKind || 'workload';
             const canRetry = err.workloadKind !== 'namespace' && err.workloadName;
+            const canAnnotate = Boolean(err.workloadName);
+            const matchId = canAnnotate
+                ? getSkippedMatchId(namespace, err.workloadName, err.workloadKind || '')
+                : '';
+            const stableId = canAnnotate
+                ? getSkippedStableId(namespace, err.workloadName, err.workloadKind || '')
+                : '';
+            const annotation = canAnnotate ? getReportAnnotation(matchId, stableId) : null;
+            const justifiedChecked = annotation?.justified ? 'checked' : '';
+            const migrationChecked = annotation?.migrationRequired ? 'checked' : '';
+            const commentValue = annotation?.comment ? `value="${escapeHtml(annotation.comment)}"` : '';
+            const keyStateClass = [
+                annotation?.justified ? 'is-justified' : '',
+                annotation?.migrationRequired ? 'is-migration' : '',
+            ].filter(Boolean).join(' ');
+            const matchIdAttr = canAnnotate ? `data-match-id="${matchId}"` : '';
             const retryButton = canRetry
                 ? `
                     <button type="button" class="btn-action btn-retry" onclick="retrySkippedApplication('${namespace}', '${err.workloadName}', '${err.workloadKind || ''}', this)">
@@ -976,8 +992,25 @@ function buildReportCards(data) {
                     </button>
                 `
                 : '';
+            const annotationControls = canAnnotate
+                ? `
+                    <div class="report-annotation" data-match-id="${matchId}">
+                        <div class="report-annotation-controls">
+                            <label class="report-annotation-option">
+                                <input type="checkbox" data-field="justified" ${justifiedChecked}>
+                                Justified
+                            </label>
+                            <label class="report-annotation-option">
+                                <input type="checkbox" data-field="migrationRequired" ${migrationChecked}>
+                                Migration required
+                            </label>
+                        </div>
+                        <input class="report-annotation-input" type="text" placeholder="Optional comment" data-field="comment" ${commentValue}>
+                    </div>
+                `
+                : '';
             return `
-                <div class="report-key">
+                <div class="report-key ${keyStateClass}" ${matchIdAttr}>
                     <div class="report-key-header">
                         <div class="report-key-name">${escapeHtml(err.workloadName)} (${escapeHtml(kindLabel)})</div>
                         ${retryButton}
@@ -987,6 +1020,7 @@ function buildReportCards(data) {
                     </div>
                     <div class="report-inline-status" data-inline-status="true"></div>
                     <span>${escapeHtml(err.message || 'Failed to fetch config')}</span>
+                    ${annotationControls}
                 </div>
             `;
         }).join('');
@@ -1197,10 +1231,11 @@ function buildReportAppEntries(namespace, reportData) {
         if (error.workloadKind === 'namespace') {
             return;
         }
+        const status = determineSkippedStatus(namespace, workloadName, error.workloadKind || '');
         apps.set(workloadName, {
             name: workloadName,
             workloadKind: error.workloadKind || '',
-            status: 'skipped',
+            status,
         });
     });
 
@@ -1230,6 +1265,19 @@ function determineAppStatus(namespace, workloadName, matches) {
         return 'justified';
     }
     return 'not-worked';
+}
+
+function determineSkippedStatus(namespace, workloadName, workloadKind) {
+    const matchId = getSkippedMatchId(namespace, workloadName, workloadKind);
+    const stableId = getSkippedStableId(namespace, workloadName, workloadKind);
+    const annotation = getReportAnnotation(matchId, stableId);
+    if (annotation.migrationRequired) {
+        return 'migration';
+    }
+    if (annotation.justified) {
+        return 'justified';
+    }
+    return 'skipped';
 }
 
 function determineNamespaceStatus(apps, namespaceError) {
@@ -1694,6 +1742,26 @@ function collectReportAnnotations(reportPayload) {
                 }
             });
         });
+
+        const errors = report.data?.errors || [];
+        errors.forEach(error => {
+            const workloadName = error.workloadName || '';
+            if (!workloadName || error.workloadKind === 'namespace') {
+                return;
+            }
+            const matchId = getSkippedMatchId(namespace, workloadName, error.workloadKind || '');
+            const stableId = getSkippedStableId(namespace, workloadName, error.workloadKind || '');
+            const annotation = getReportAnnotation(matchId, stableId);
+            const hasComment = Boolean(annotation.comment && annotation.comment.trim());
+            if (annotation.justified || annotation.migrationRequired || hasComment) {
+                annotations.push({
+                    matchId,
+                    justified: Boolean(annotation.justified),
+                    migrationRequired: Boolean(annotation.migrationRequired),
+                    comment: annotation.comment || '',
+                });
+            }
+        });
     });
 
     return annotations;
@@ -1980,6 +2048,16 @@ function getReportStableId(namespace, workloadName, keyEntry) {
     const source = keyEntry.source || 'effective';
     const matchOn = keyEntry.matchOn || 'value';
     const rawId = `${namespace}||${workloadName}||${keyEntry.key}||${source}||${matchOn}`;
+    return toBase64(rawId);
+}
+
+function getSkippedMatchId(namespace, workloadName, workloadKind) {
+    const rawId = `${namespace}||${workloadName}||__skipped__||${workloadKind || ''}`;
+    return toBase64(rawId);
+}
+
+function getSkippedStableId(namespace, workloadName, workloadKind) {
+    const rawId = `${namespace}||${workloadName}||__skipped__||${workloadKind || ''}`;
     return toBase64(rawId);
 }
 
