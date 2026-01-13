@@ -91,6 +91,27 @@
                     <div id="report-history-list" class="report-history-list"></div>
                 </div>
                 <div id="report-status" class="report-status"></div>
+                <div id="report-visuals" class="report-visuals">
+                    <div class="report-visuals-header">
+                        <div>
+                            <div class="report-visuals-title">Report overview</div>
+                            <div id="report-drilldown" class="report-drilldown">Click a namespace slice to drill into apps.</div>
+                        </div>
+                        <button id="report-reset-view" class="btn btn-secondary">Reset view</button>
+                    </div>
+                    <div class="report-chart-grid">
+                        <div class="report-chart-card">
+                            <div class="report-chart-title">Namespaces</div>
+                            <div id="report-namespace-chart" class="report-chart"></div>
+                            <div id="report-namespace-legend" class="report-legend"></div>
+                        </div>
+                        <div class="report-chart-card">
+                            <div id="report-app-chart-title" class="report-chart-title">Applications</div>
+                            <div id="report-app-chart" class="report-chart"></div>
+                            <div id="report-app-legend" class="report-legend"></div>
+                        </div>
+                    </div>
+                </div>
                 <div id="report-results" class="report-results"></div>
             </section>
         </section>
@@ -135,7 +156,7 @@
                         <option value="by-source">By source</option>
                         <option value="effective">Effective only</option>
                         <option value="by-key">By key (precedence stack)</option>
-                        <option value="chain">Config chain (bootstrap É≈' application É≈' workload)</option>
+                        <option value="chain">Config chain (bootstrap ∆í√Ö' application ∆í√Ö' workload)</option>
                     </select>
                     <div id="config-profiles" class="config-profiles"></div>
                 </div>

@@ -44,6 +44,14 @@ const reportHistorySelect = document.getElementById('report-history-select');
 const reportHistoryApply = document.getElementById('report-history-apply');
 const reportHistoryClear = document.getElementById('report-history-clear');
 const reportHistoryList = document.getElementById('report-history-list');
+const reportVisuals = document.getElementById('report-visuals');
+const reportNamespaceChart = document.getElementById('report-namespace-chart');
+const reportNamespaceLegend = document.getElementById('report-namespace-legend');
+const reportAppChart = document.getElementById('report-app-chart');
+const reportAppLegend = document.getElementById('report-app-legend');
+const reportAppChartTitle = document.getElementById('report-app-chart-title');
+const reportDrilldown = document.getElementById('report-drilldown');
+const reportResetView = document.getElementById('report-reset-view');
 const namespaceScaleInput = document.getElementById('namespace-scale-input');
 const namespaceScaleBtn = document.getElementById('namespace-scale-btn');
 const namespaceScaleStatus = document.getElementById('namespace-scale-status');
@@ -55,6 +63,13 @@ const REPORT_HISTORY_LIMIT = 12;
 const REPORT_SNAPSHOT_VERSION = 1;
 const ROLLOUT_POLL_INTERVAL_MS = 10000;
 const ROLLOUT_POLL_LIMIT = 60;
+const REPORT_STATUS_STYLES = {
+    justified: { label: 'Justified', color: '#22c55e' },
+    migration: { label: 'Migration Required', color: '#ef4444' },
+    'not-worked': { label: 'Not worked', color: '#f59e0b' },
+    skipped: { label: 'Skipped Application', color: '#94a3b8' },
+};
+const REPORT_STATUS_ORDER = ['justified', 'migration', 'not-worked', 'skipped'];
 
 // State
 let currentNamespace = '';
@@ -65,6 +80,7 @@ let reportResultsState = null;
 let lastReportHistorySignature = null;
 const reportAnnotations = new Map();
 const reportAnnotationSeeds = new Map();
+let reportViewState = { namespace: null, app: null };
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -212,6 +228,12 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    if (reportResetView) {
+        reportResetView.addEventListener('click', () => {
+            resetReportDrilldown();
+        });
+    }
+
     reportResults.addEventListener('click', (event) => {
         const target = getEventTargetElement(event);
         if (!target) {
@@ -310,6 +332,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                     updateReportKeyState(card, cardEntry);
                 });
+                refreshReportCharts();
                 return;
             }
 
@@ -333,6 +356,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (keyCard) {
                 updateReportKeyState(keyCard, entry);
             }
+            refreshReportCharts();
         }
     });
 
@@ -376,6 +400,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     setReportStatus('Enter a regex pattern and run the report.', 'info');
     setReportPostRunVisible(false);
+    updateReportDrilldown();
     renderReportHistory();
 });
 
@@ -603,6 +628,7 @@ function applyReportHistoryEntry(entry) {
             renderMultiNamespaceResults(entry.reportData.reports || []);
         }
         setReportPostRunVisible(true);
+        resetReportViewState();
         setReportStatusFromHistory(entry.reportData);
     }
 }
@@ -797,6 +823,12 @@ function setReportPostRunVisible(isVisible) {
         return;
     }
     reportActions.classList.toggle('is-ready', isVisible);
+    if (reportVisuals) {
+        reportVisuals.classList.toggle('is-visible', isVisible);
+    }
+    if (!isVisible) {
+        clearReportVisuals();
+    }
 }
 
 function setNamespaceScaleStatus(message, type = 'info') {
@@ -970,20 +1002,18 @@ function buildReportCards(data) {
     return html;
 }
 
-function renderReportResults(data) {
-    reportResultsState = { mode: 'single', data };
+function renderReportResultsView(data) {
     preserveReportScroll(() => {
         reportResults.innerHTML = buildReportCards(data);
     });
 }
 
-function renderMultiNamespaceResults(reports) {
+function renderMultiNamespaceResultsView(reports) {
     if (!reports.length) {
         reportResults.innerHTML = '<div class="report-empty">No namespaces returned.</div>';
         return;
     }
 
-    reportResultsState = { mode: 'multi', reports };
     preserveReportScroll(() => {
         reportResults.innerHTML = reports.map(report => `
             <details class="report-namespace" data-namespace="${escapeHtml(report.namespace)}" open>
@@ -992,6 +1022,18 @@ function renderMultiNamespaceResults(reports) {
             </details>
         `).join('');
     });
+}
+
+function renderReportResults(data) {
+    reportResultsState = { mode: 'single', data };
+    renderReportResultsView(data);
+    refreshReportCharts();
+}
+
+function renderMultiNamespaceResults(reports) {
+    reportResultsState = { mode: 'multi', reports };
+    renderMultiNamespaceResultsView(reports);
+    refreshReportCharts();
 }
 
 function highlightMatches(text, pattern, caseInsensitive) {
@@ -1019,6 +1061,415 @@ function highlightMatches(text, pattern, caseInsensitive) {
 
     result += escapeHtml(text.slice(lastIndex));
     return result;
+}
+
+function resetReportViewState() {
+    reportViewState = { namespace: null, app: null };
+    refreshReportCharts();
+}
+
+function resetReportDrilldown() {
+    reportViewState = { namespace: null, app: null };
+    restoreReportResultsView();
+    refreshReportCharts();
+}
+
+function updateReportDrilldown() {
+    if (!reportDrilldown) {
+        return;
+    }
+    const parts = [];
+    if (reportViewState.namespace) {
+        parts.push(`Namespace: ${reportViewState.namespace}`);
+    }
+    if (reportViewState.app) {
+        parts.push(`Application: ${reportViewState.app}`);
+    }
+    if (parts.length === 0) {
+        reportDrilldown.textContent = 'Click a namespace slice to drill into apps.';
+        if (reportResetView) {
+            reportResetView.disabled = true;
+        }
+        return;
+    }
+    reportDrilldown.textContent = parts.join(' / ');
+    if (reportResetView) {
+        reportResetView.disabled = false;
+    }
+}
+
+function restoreReportResultsView() {
+    if (!reportResultsState) {
+        return;
+    }
+    if (reportResultsState.mode === 'single') {
+        renderReportResultsView(reportResultsState.data);
+    } else if (reportResultsState.mode === 'multi') {
+        renderMultiNamespaceResultsView(reportResultsState.reports || []);
+    }
+}
+
+function refreshReportCharts() {
+    if (!reportVisuals) {
+        return;
+    }
+    if (!reportResultsState) {
+        clearReportVisuals();
+        return;
+    }
+    const summaries = buildReportNamespaceSummaries();
+    renderNamespaceChart(summaries);
+    renderAppChart(summaries);
+    updateReportDrilldown();
+}
+
+function clearReportVisuals() {
+    if (reportNamespaceChart) {
+        reportNamespaceChart.innerHTML = '';
+    }
+    if (reportNamespaceLegend) {
+        reportNamespaceLegend.innerHTML = '';
+    }
+    if (reportAppChart) {
+        reportAppChart.innerHTML = '';
+    }
+    if (reportAppLegend) {
+        reportAppLegend.innerHTML = '';
+    }
+    if (reportAppChartTitle) {
+        reportAppChartTitle.textContent = 'Applications';
+    }
+    reportViewState = { namespace: null, app: null };
+    updateReportDrilldown();
+}
+
+function buildReportNamespaceSummaries() {
+    if (!reportResultsState) {
+        return [];
+    }
+    const reports = reportResultsState.mode === 'single'
+        ? [{ namespace: reportResultsState.data?.namespace || currentNamespace, data: reportResultsState.data || {} }]
+        : (reportResultsState.reports || []);
+
+    return reports.map(report => {
+        const namespace = report.namespace || '';
+        const data = report.data || {};
+        const matched = data.matched || [];
+        const errors = data.errors || [];
+        const hasMatches = matched.length > 0;
+        const hasErrors = errors.length > 0;
+        if (!hasMatches && !hasErrors) {
+            return null;
+        }
+        const apps = buildReportAppEntries(namespace, data);
+        const namespaceError = errors.some(err => err.workloadKind === 'namespace');
+        const status = determineNamespaceStatus(apps, namespaceError);
+        if (!status) {
+            return null;
+        }
+        return { namespace, status, apps };
+    }).filter(Boolean);
+}
+
+function buildReportAppEntries(namespace, reportData) {
+    const apps = new Map();
+    const matched = reportData.matched || [];
+    matched.forEach(workload => {
+        const workloadName = workload.workloadName || '';
+        if (!workloadName) {
+            return;
+        }
+        const matches = workload.matches || [];
+        const status = determineAppStatus(namespace, workloadName, matches);
+        apps.set(workloadName, {
+            name: workloadName,
+            workloadKind: workload.workloadKind || '',
+            status,
+        });
+    });
+
+    const errors = reportData.errors || [];
+    errors.forEach(error => {
+        const workloadName = error.workloadName || '';
+        if (!workloadName || apps.has(workloadName)) {
+            return;
+        }
+        if (error.workloadKind === 'namespace') {
+            return;
+        }
+        apps.set(workloadName, {
+            name: workloadName,
+            workloadKind: error.workloadKind || '',
+            status: 'skipped',
+        });
+    });
+
+    return Array.from(apps.values());
+}
+
+function determineAppStatus(namespace, workloadName, matches) {
+    if (!matches.length) {
+        return 'not-worked';
+    }
+    let anyMigration = false;
+    let allJustified = true;
+    matches.forEach(match => {
+        const matchId = getReportMatchId(namespace, workloadName, match);
+        const annotation = getReportAnnotation(matchId);
+        if (annotation.migrationRequired) {
+            anyMigration = true;
+        }
+        if (!annotation.justified) {
+            allJustified = false;
+        }
+    });
+    if (anyMigration) {
+        return 'migration';
+    }
+    if (allJustified) {
+        return 'justified';
+    }
+    return 'not-worked';
+}
+
+function determineNamespaceStatus(apps, namespaceError) {
+    if (!apps.length) {
+        return namespaceError ? 'skipped' : null;
+    }
+    const statuses = apps.map(app => app.status);
+    if (statuses.includes('migration')) {
+        return 'migration';
+    }
+    if (statuses.includes('not-worked')) {
+        return 'not-worked';
+    }
+    if (statuses.includes('skipped')) {
+        return 'skipped';
+    }
+    return 'justified';
+}
+
+function renderNamespaceChart(summaries) {
+    const items = summaries.map(summary => ({
+        id: summary.namespace,
+        label: summary.namespace,
+        status: summary.status,
+        value: 1,
+    }));
+    renderPieChart(reportNamespaceChart, items, {
+        selectedId: reportViewState.namespace,
+        emptyMessage: 'No namespaces matched this pattern.',
+        onClick: (namespace) => selectNamespace(namespace),
+    });
+    renderLegend(reportNamespaceLegend, countStatusItems(items));
+}
+
+function renderAppChart(summaries) {
+    const selectedNamespace = reportViewState.namespace;
+    if (!selectedNamespace) {
+        if (reportAppChartTitle) {
+            reportAppChartTitle.textContent = 'Applications';
+        }
+        renderPieChart(reportAppChart, [], { emptyMessage: 'Select a namespace to see applications.' });
+        renderLegend(reportAppLegend, {});
+        return;
+    }
+
+    const summary = summaries.find(item => item.namespace === selectedNamespace);
+    const apps = summary ? summary.apps : [];
+    const items = apps.map(app => ({
+        id: app.name,
+        label: app.name,
+        status: app.status,
+        value: 1,
+    }));
+
+    if (reportAppChartTitle) {
+        reportAppChartTitle.textContent = `Applications in ${selectedNamespace}`;
+    }
+    renderPieChart(reportAppChart, items, {
+        selectedId: reportViewState.app,
+        emptyMessage: 'No applications matched this pattern.',
+        onClick: (appName) => selectApplication(selectedNamespace, appName),
+    });
+    renderLegend(reportAppLegend, countStatusItems(items));
+}
+
+function selectNamespace(namespace) {
+    if (!namespace || namespace === reportViewState.namespace) {
+        return;
+    }
+    reportViewState = { namespace, app: null };
+    restoreReportResultsView();
+    refreshReportCharts();
+}
+
+function selectApplication(namespace, appName) {
+    if (!namespace || !appName) {
+        return;
+    }
+    reportViewState = { namespace, app: appName };
+    const data = buildReportDataForApp(namespace, appName);
+    if (data) {
+        renderReportResultsView(data);
+    }
+    refreshReportCharts();
+}
+
+function buildReportDataForApp(namespace, appName) {
+    const reportData = getReportDataForNamespace(namespace);
+    if (!reportData) {
+        return null;
+    }
+    const matched = (reportData.matched || []).filter(workload => workload.workloadName === appName);
+    const errors = (reportData.errors || []).filter(error => error.workloadName === appName);
+    if (!matched.length && !errors.length) {
+        return null;
+    }
+    return {
+        namespace,
+        matched,
+        errors,
+    };
+}
+
+function getReportDataForNamespace(namespace) {
+    if (!reportResultsState) {
+        return null;
+    }
+    if (reportResultsState.mode === 'single') {
+        const data = reportResultsState.data || {};
+        const dataNamespace = data.namespace || currentNamespace;
+        return dataNamespace === namespace ? data : null;
+    }
+    if (reportResultsState.mode === 'multi') {
+        const report = (reportResultsState.reports || []).find(item => item.namespace === namespace);
+        return report ? report.data : null;
+    }
+    return null;
+}
+
+function renderPieChart(container, items, options = {}) {
+    if (!container) {
+        return;
+    }
+    const emptyMessage = options.emptyMessage || 'No data to display.';
+    container.innerHTML = '';
+
+    if (!items.length) {
+        container.innerHTML = `<div class="report-empty">${escapeHtml(emptyMessage)}</div>`;
+        return;
+    }
+
+    const total = items.reduce((sum, item) => sum + (item.value || 0), 0);
+    if (!total) {
+        container.innerHTML = `<div class="report-empty">${escapeHtml(emptyMessage)}</div>`;
+        return;
+    }
+
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 100 100');
+    svg.setAttribute('class', 'report-pie');
+
+    if (items.length === 1) {
+        const item = items[0];
+        const statusStyle = REPORT_STATUS_STYLES[item.status] || REPORT_STATUS_STYLES['not-worked'];
+        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        circle.setAttribute('cx', '50');
+        circle.setAttribute('cy', '50');
+        circle.setAttribute('r', '48');
+        circle.setAttribute('fill', statusStyle.color);
+        circle.setAttribute('class', 'report-pie-slice');
+        circle.setAttribute('data-id', item.id);
+        if (item.id === options.selectedId) {
+            circle.classList.add('is-selected');
+        }
+        if (typeof options.onClick === 'function') {
+            circle.addEventListener('click', () => options.onClick(item.id));
+        }
+        const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+        title.textContent = `${item.label} (${statusStyle.label})`;
+        circle.appendChild(title);
+        svg.appendChild(circle);
+        container.appendChild(svg);
+        return;
+    }
+
+    let startAngle = 0;
+    items.forEach(item => {
+        const value = item.value || 0;
+        if (!value) {
+            return;
+        }
+        const angle = (value / total) * 360;
+        const endAngle = startAngle + angle;
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        const statusStyle = REPORT_STATUS_STYLES[item.status] || REPORT_STATUS_STYLES['not-worked'];
+        path.setAttribute('d', describeArc(50, 50, 48, startAngle, endAngle));
+        path.setAttribute('fill', statusStyle.color);
+        path.setAttribute('class', 'report-pie-slice');
+        path.setAttribute('data-id', item.id);
+        if (item.id === options.selectedId) {
+            path.classList.add('is-selected');
+        }
+        if (typeof options.onClick === 'function') {
+            path.addEventListener('click', () => options.onClick(item.id));
+        }
+        const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+        title.textContent = `${item.label} (${statusStyle.label})`;
+        path.appendChild(title);
+        svg.appendChild(path);
+        startAngle = endAngle;
+    });
+
+    container.appendChild(svg);
+}
+
+function describeArc(x, y, radius, startAngle, endAngle) {
+    const start = polarToCartesian(x, y, radius, endAngle);
+    const end = polarToCartesian(x, y, radius, startAngle);
+    const largeArcFlag = endAngle - startAngle <= 180 ? '0' : '1';
+    return [
+        'M', x, y,
+        'L', start.x, start.y,
+        'A', radius, radius, 0, largeArcFlag, 0, end.x, end.y,
+        'Z',
+    ].join(' ');
+}
+
+function polarToCartesian(centerX, centerY, radius, angleInDegrees) {
+    const angleInRadians = (angleInDegrees - 90) * Math.PI / 180.0;
+    return {
+        x: centerX + (radius * Math.cos(angleInRadians)),
+        y: centerY + (radius * Math.sin(angleInRadians)),
+    };
+}
+
+function countStatusItems(items) {
+    return items.reduce((counts, item) => {
+        if (!item.status) {
+            return counts;
+        }
+        counts[item.status] = (counts[item.status] || 0) + (item.value || 0);
+        return counts;
+    }, {});
+}
+
+function renderLegend(container, counts) {
+    if (!container) {
+        return;
+    }
+    container.innerHTML = REPORT_STATUS_ORDER.map(key => {
+        const style = REPORT_STATUS_STYLES[key];
+        const count = counts[key] || 0;
+        return `
+            <div class="report-legend-item">
+                <span class="report-legend-swatch" style="background:${style.color}"></span>
+                <span>${escapeHtml(style.label)}</span>
+                <span>${count}</span>
+            </div>
+        `;
+    }).join('');
 }
 
 async function runSpringConfigReport() {
@@ -1086,6 +1537,7 @@ async function runSingleNamespaceReport(namespace, query) {
         const signature = lastReportHistorySignature
             || buildHistorySignature(buildHistoryEntryFromSelection(getSelectedReportNamespaces()));
         updateReportHistoryResults(signature, { mode: 'single', data });
+        resetReportViewState();
     } catch (error) {
         console.error('Error running config report:', error);
         setReportStatus(`Error: ${error.message}`, 'error');
@@ -1142,6 +1594,7 @@ async function runMultiNamespaceReport(targetNamespaces, query) {
     const signature = lastReportHistorySignature
         || buildHistorySignature(buildHistoryEntryFromSelection(getSelectedReportNamespaces()));
     updateReportHistoryResults(signature, { mode: 'multi', reports });
+    resetReportViewState();
 }
 
 function buildReportSnapshot() {
@@ -1335,6 +1788,7 @@ function applyReportSnapshot(snapshot) {
     }
 
     setReportPostRunVisible(true);
+    resetReportViewState();
 
     if (missingNamespaces.length) {
         setReportStatus(`Loaded report. Missing namespaces: ${missingNamespaces.join(', ')}.`, 'info');
