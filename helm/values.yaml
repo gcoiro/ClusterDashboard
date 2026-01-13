@@ -74,6 +74,13 @@ backend:
     initialDelaySeconds: 10
     periodSeconds: 5
 
+# Spring config agent configuration
+springConfigAgent:
+  enabled: false
+  fileName: spring-config-agent.jar
+  mountPath: /opt/spring-config-agent/spring-config-agent.jar
+  outputDir: /tmp/spring-config-agent
+
 # Redis deployment configuration
 redis:
   enabled: true

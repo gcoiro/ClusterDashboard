@@ -54,6 +54,14 @@ spec:
           value: {{ .Values.backend.configReportConcurrency | quote }}
         - name: CACHE_TTL_SECONDS
           value: {{ .Values.backend.cacheTtlSeconds | quote }}
+        {{- if .Values.springConfigAgent.enabled | default false }}
+        - name: SPRING_CONFIG_AGENT_ENABLED
+          value: "true"
+        - name: SPRING_CONFIG_AGENT_JAR_PATH
+          value: {{ .Values.springConfigAgent.mountPath | quote }}
+        - name: SPRING_CONFIG_AGENT_OUTPUT_DIR
+          value: {{ .Values.springConfigAgent.outputDir | quote }}
+        {{- end }}
         {{- if .Values.redis.enabled }}
         - name: REDIS_HOST
           value: {{ include "openshift-dashboard.fullname" . }}-redis
@@ -64,6 +72,11 @@ spec:
         - name: backend-app
           mountPath: /tmp/app.py
           subPath: app.py
+        {{- if .Values.springConfigAgent.enabled | default false }}
+        - name: spring-config-agent
+          mountPath: {{ .Values.springConfigAgent.mountPath | quote }}
+          subPath: {{ .Values.springConfigAgent.fileName | quote }}
+        {{- end }}
         resources:
           {{- toYaml .Values.backend.resources | nindent 10 }}
         livenessProbe:
@@ -82,5 +95,13 @@ spec:
       - name: backend-app
         configMap:
           name: {{ include "openshift-dashboard.fullname" . }}-backend-app
+      {{- if .Values.springConfigAgent.enabled | default false }}
+      - name: spring-config-agent
+        configMap:
+          name: {{ include "openshift-dashboard.fullname" . }}-spring-config-agent
+          items:
+          - key: {{ .Values.springConfigAgent.fileName | quote }}
+            path: {{ .Values.springConfigAgent.fileName | quote }}
+      {{- end }}
 {{- end }}
 

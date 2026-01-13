@@ -1,0 +1,23 @@
+# spring-config-agent
+
+Java agent that captures configuration inputs for Spring workloads by dumping
+system properties, environment variables, and classpath/config files.
+
+Build:
+```
+mvn -q -f spring-config-agent/pom.xml package
+```
+
+Usage (attach to a JVM):
+```
+jcmd <pid> VM.load_agent spring-config-agent/target/spring-config-agent-0.1.0.jar output=/tmp/spring-config.json
+```
+
+Usage (run directly for inspection):
+```
+java -jar spring-config-agent/target/spring-config-agent-0.1.0.jar output=/tmp/spring-config.json
+```
+
+Arguments:
+- `output`: file path to write JSON (defaults to stdout)
+- `maxChars`: maximum characters captured per file/resource (default 200000)

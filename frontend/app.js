@@ -992,6 +992,13 @@ function buildReportCards(data) {
                     </button>
                 `
                 : '';
+            const agentButton = canRetry
+                ? `
+                    <button type="button" class="btn-action btn-agent" onclick="applySpringConfigAgent('${namespace}', '${err.workloadName}', '${err.workloadKind || ''}', this)">
+                        Apply Spring Config Agent
+                    </button>
+                `
+                : '';
             const annotationControls = canAnnotate
                 ? `
                     <div class="report-annotation" data-match-id="${matchId}">
@@ -1017,6 +1024,7 @@ function buildReportCards(data) {
                         <button type="button" class="btn-action btn-expose" onclick="exposeActuatorEnv('${namespace}', '${err.workloadName}', '${err.workloadKind || ''}', this)">
                             Expose Actuator
                         </button>
+                        ${agentButton}
                     </div>
                     <div class="report-inline-status" data-inline-status="true"></div>
                     <span>${escapeHtml(err.message || 'Failed to fetch config')}</span>
@@ -2633,6 +2641,68 @@ async function exposeActuatorEnv(namespace, workloadName, workloadKind, buttonEl
             buttonEl.textContent = 'Expose Actuator';
         }
         setReportStatus(`Error: ${error.message}`, 'error');
+    }
+}
+
+async function applySpringConfigAgent(namespace, workloadName, workloadKind, buttonEl) {
+    if (!namespace || !workloadName) {
+        setReportStatus('Missing namespace or workload name.', 'error');
+        return;
+    }
+
+    const kindLabel = workloadKind || 'workload';
+    if (!confirm(`Apply the Spring Config Agent for ${workloadName} (${kindLabel}) in ${namespace}?`)) {
+        return;
+    }
+
+    if (buttonEl) {
+        buttonEl.disabled = true;
+        buttonEl.classList.remove('is-success', 'is-error');
+        buttonEl.textContent = 'Applying...';
+    }
+
+    const statusEl = buttonEl
+        ? buttonEl.closest('.report-key')?.querySelector('[data-inline-status="true"]')
+        : null;
+    setInlineStatus(statusEl, 'Applying Spring Config Agent...', 'info');
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/config/${namespace}/${workloadName}/apply-spring-config-agent`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ workloadKind }),
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            const message = errorData.detail?.message || errorData.detail || 'Failed to apply Spring Config Agent';
+            throw new Error(message);
+        }
+
+        const result = await response.json();
+        const message = result.message || 'Spring Config Agent applied.';
+        setReportStatus(message, 'success');
+        setInlineStatus(statusEl, message, 'success');
+        if (buttonEl) {
+            buttonEl.textContent = 'Applied';
+            buttonEl.classList.add('is-success');
+        }
+    } catch (error) {
+        console.error('Error applying Spring Config Agent:', error);
+        const message = `Error: ${error.message}`;
+        setReportStatus(message, 'error');
+        setInlineStatus(statusEl, message, 'error');
+        if (buttonEl) {
+            buttonEl.textContent = 'Apply Spring Config Agent';
+            buttonEl.classList.add('is-error');
+        }
+        return;
+    } finally {
+        if (buttonEl) {
+            buttonEl.disabled = false;
+        }
     }
 }
 

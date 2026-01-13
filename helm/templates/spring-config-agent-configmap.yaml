@@ -1,0 +1,10 @@
+{{- if .Values.springConfigAgent.enabled | default false }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "openshift-dashboard.fullname" . }}-spring-config-agent
+  labels:
+    {{- include "openshift-dashboard.labels" . | nindent 4 }}
+binaryData:
+  {{ .Values.springConfigAgent.fileName }}: {{ .Files.Get "files/spring-config-agent.jar" | b64enc }}
+{{- end }}

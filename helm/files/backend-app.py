@@ -33,6 +33,15 @@ KUBERNETES_API_SERVER = os.getenv("KUBERNETES_API_SERVER", "https://kubernetes.d
 KUBERNETES_TOKEN = os.getenv("KUBERNETES_TOKEN", "")
 DEFAULT_SPRING_PORT = os.getenv("DEFAULT_SPRING_PORT", "9150")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+SPRING_CONFIG_AGENT_ENABLED = os.getenv("SPRING_CONFIG_AGENT_ENABLED", "false").lower() in ("1", "true", "yes")
+SPRING_CONFIG_AGENT_JAR_PATH = os.getenv(
+    "SPRING_CONFIG_AGENT_JAR_PATH",
+    "/opt/spring-config-agent/spring-config-agent.jar",
+)
+SPRING_CONFIG_AGENT_OUTPUT_DIR = os.getenv(
+    "SPRING_CONFIG_AGENT_OUTPUT_DIR",
+    "/tmp/spring-config-agent",
+)
 REDIS_HOST = os.getenv("REDIS_HOST")
 try:
     REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
@@ -72,6 +81,7 @@ logger.info("API server: %s", KUBERNETES_API_SERVER)
 logger.info("Token source: %s", token_source)
 logger.info("Cache TTL: %ss", CACHE_TTL_SECONDS)
 logger.info("Redis enabled: %s", "yes" if REDIS_HOST else "no")
+logger.info("Spring config agent enabled: %s", "yes" if SPRING_CONFIG_AGENT_ENABLED else "no")
 
 _actuator_cache = {}
 _redis_client = None
@@ -704,6 +714,10 @@ class ExposeActuatorRequest(BaseModel):
     workloadKind: Optional[str] = None
 
 
+class ApplySpringConfigAgentRequest(BaseModel):
+    workloadKind: Optional[str] = None
+
+
 @app.patch("/api/deployments/{namespace}/{name}/scale")
 async def scale_deployment(namespace: str, name: str, request: ScaleRequest):
     try:
@@ -1154,6 +1168,42 @@ async def expose_actuator_env(namespace: str, workloadName: str, request: Option
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to expose actuator env: {str(exc)}")
+
+
+@app.post("/api/config/{namespace}/{workloadName}/apply-spring-config-agent")
+async def apply_spring_config_agent(
+    namespace: str,
+    workloadName: str,
+    request: Optional[ApplySpringConfigAgentRequest] = None,
+):
+    if not SPRING_CONFIG_AGENT_ENABLED:
+        raise_structured_error(
+            501,
+            "agent_not_configured",
+            (
+                "Spring config agent workflow is not configured on this backend. "
+                "Set SPRING_CONFIG_AGENT_ENABLED=true and mount the agent jar."
+            ),
+            {
+                "agentJarPath": SPRING_CONFIG_AGENT_JAR_PATH,
+                "outputDir": SPRING_CONFIG_AGENT_OUTPUT_DIR,
+            },
+        )
+    logger.info(
+        "Apply spring config agent requested namespace=%s workload=%s kind=%s",
+        namespace,
+        workloadName,
+        request.workloadKind if request else None,
+    )
+    raise_structured_error(
+        501,
+        "agent_not_implemented",
+        "Spring config agent workflow is enabled, but execution is not implemented yet.",
+        {
+            "agentJarPath": SPRING_CONFIG_AGENT_JAR_PATH,
+            "outputDir": SPRING_CONFIG_AGENT_OUTPUT_DIR,
+        },
+    )
 
 
 if __name__ == "__main__":
