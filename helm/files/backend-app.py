@@ -161,6 +161,26 @@ def run_oc_with_timeout(args, timeout_seconds=30, expect_json=False):
     return result.stdout
 
 
+def run_oc_allow_timeout(args, timeout_seconds=15):
+    logger.debug("oc %s", " ".join(args))
+    try:
+        result = subprocess.run(
+            oc_base_args() + args,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("oc command timed out (continuing): %s", " ".join(args))
+        return None
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        logger.error("oc error (%s): %s", " ".join(args), detail)
+        status = 403 if "forbidden" in detail.lower() else 500
+        raise HTTPException(status_code=status, detail=f"oc error: {detail}")
+    return result.stdout
+
+
 def run_oc_raw(path: str, expect_json=False):
     logger.debug("oc get --raw %s", path)
     result = subprocess.run(
@@ -365,6 +385,33 @@ def count_pod_restarts(namespace: str, label_selector: str) -> int:
             except (TypeError, ValueError):
                 continue
     return total
+
+
+def select_target_pod(pods):
+    if not pods:
+        return None
+
+    def is_ready(pod):
+        return is_pod_ready(pod)
+
+    def creation_ts(pod):
+        return pod.get("metadata", {}).get("creationTimestamp", "")
+
+    not_ready = [pod for pod in pods if not is_ready(pod)]
+    candidates = not_ready if not_ready else pods
+    candidates.sort(key=creation_ts, reverse=True)
+    return candidates[0]
+
+
+def wait_for_pod_running(namespace: str, pod_name: str, timeout_seconds=60):
+    start = time.time()
+    while time.time() - start < timeout_seconds:
+        pod = run_oc(["get", "pod", pod_name, "-n", namespace, "-o", "json"], expect_json=True)
+        phase = pod.get("status", {}).get("phase")
+        if phase == "Running":
+            return pod
+        time.sleep(2)
+    raise HTTPException(status_code=504, detail=f"Timed out waiting for debug pod {pod_name} to be running")
 
 
 def get_services_map(namespace: str):
@@ -1211,22 +1258,154 @@ async def apply_spring_config_agent(
     )
     if not os.path.exists(SPRING_CONFIG_AGENT_JAR_PATH):
         logger.error("Spring config agent jar missing at %s", SPRING_CONFIG_AGENT_JAR_PATH)
+        raise_structured_error(
+            500,
+            "agent_jar_missing",
+            f"Spring config agent jar not found at {SPRING_CONFIG_AGENT_JAR_PATH}",
+            {"agentJarPath": SPRING_CONFIG_AGENT_JAR_PATH},
+        )
     else:
         try:
             size = os.path.getsize(SPRING_CONFIG_AGENT_JAR_PATH)
             logger.debug("Spring config agent jar sizeBytes=%s", size)
         except OSError as exc:
             logger.warning("Spring config agent jar stat failed: %s", str(exc))
+    workload_kind = normalize_workload_kind(request.workloadKind if request else None)
+    workload = None
+    if workload_kind is None:
+        workload_kind, workload = get_workload(namespace, workloadName)
+        if not workload:
+            raise_structured_error(
+                404,
+                "workload_not_found",
+                f"Workload '{workloadName}' not found in namespace '{namespace}'",
+            )
+    if workload is None:
+        _, workload = get_workload(namespace, workloadName)
+        if not workload:
+            raise_structured_error(
+                404,
+                "workload_not_found",
+                f"Workload '{workloadName}' not found in namespace '{namespace}'",
+            )
 
-    raise_structured_error(
-        501,
-        "agent_not_implemented",
-        "Spring config agent workflow is enabled, but execution is not implemented yet.",
-        {
-            "agentJarPath": SPRING_CONFIG_AGENT_JAR_PATH,
-            "outputDir": SPRING_CONFIG_AGENT_OUTPUT_DIR,
-        },
+    fallback_labels = workload.get("spec", {}).get("template", {}).get("metadata", {}).get("labels", {})
+    label_selector = get_workload_selector(workload, fallback_labels)
+    if not label_selector:
+        raise_structured_error(
+            404,
+            "no_label_selector",
+            f"No label selector found for workload '{workloadName}'",
+        )
+
+    pod_data = run_oc(["get", "pods", "-n", namespace, "-l", label_selector, "-o", "json"], expect_json=True)
+    target_pod = select_target_pod(pod_data.get("items", []))
+    if not target_pod:
+        raise_structured_error(
+            404,
+            "pod_not_found",
+            f"No pods found for workload '{workloadName}'",
+        )
+    target_pod_name = target_pod.get("metadata", {}).get("name", "")
+    if not target_pod_name:
+        raise_structured_error(
+            500,
+            "pod_name_missing",
+            f"Failed to determine pod name for workload '{workloadName}'",
+        )
+    containers = target_pod.get("spec", {}).get("containers", []) or []
+    target_image = containers[0].get("image") if containers else ""
+    if not target_image:
+        raise_structured_error(
+            500,
+            "pod_image_missing",
+            f"Failed to determine image for pod '{target_pod_name}'",
+        )
+
+    timestamp = int(time.time())
+    base_name = f"{target_pod_name}-spring-config-debug"
+    if len(base_name) > 50:
+        base_name = base_name[:50].rstrip("-")
+    debug_pod_name = f"{base_name}-{timestamp}"
+
+    logger.info(
+        "Creating debug pod %s from %s using image %s",
+        debug_pod_name,
+        target_pod_name,
+        target_image,
     )
+
+    debug_pod_created = False
+    try:
+        run_oc_allow_timeout(
+            [
+                "debug",
+                f"pod/{target_pod_name}",
+                "-n",
+                namespace,
+                "--copy-to",
+                debug_pod_name,
+                "--image",
+                target_image,
+                "--",
+                "/bin/sh",
+                "-c",
+                "sleep 3600",
+            ],
+            timeout_seconds=15,
+        )
+
+        wait_for_pod_running(namespace, debug_pod_name, timeout_seconds=90)
+        debug_pod_created = True
+
+        debug_jar_path = "/tmp/spring-config-agent.jar"
+        debug_output_path = "/tmp/spring-config.json"
+        logger.debug("Copying agent jar to debug pod %s", debug_pod_name)
+        run_oc(["cp", SPRING_CONFIG_AGENT_JAR_PATH, f"{namespace}/{debug_pod_name}:{debug_jar_path}"])
+
+        logger.info("Executing spring config agent in debug pod %s", debug_pod_name)
+        run_oc([
+            "exec",
+            "-n",
+            namespace,
+            debug_pod_name,
+            "--",
+            "java",
+            "-jar",
+            debug_jar_path,
+            f"output={debug_output_path}",
+        ])
+
+        os.makedirs(SPRING_CONFIG_AGENT_OUTPUT_DIR, exist_ok=True)
+        safe_workload = re.sub(r"[^a-zA-Z0-9_.-]+", "_", workloadName)
+        output_file = os.path.join(
+            SPRING_CONFIG_AGENT_OUTPUT_DIR,
+            f"{namespace}-{safe_workload}-spring-config.json",
+        )
+        logger.debug("Copying agent output to %s", output_file)
+        run_oc(["cp", f"{namespace}/{debug_pod_name}:{debug_output_path}", output_file])
+
+        try:
+            with open(output_file, "r") as f:
+                output_payload = json.load(f)
+        except Exception as exc:
+            logger.warning("Failed to parse agent output as JSON: %s", str(exc))
+            with open(output_file, "r") as f:
+                output_payload = f.read()
+    finally:
+        if debug_pod_created:
+            run_oc(["delete", "pod", debug_pod_name, "-n", namespace, "--ignore-not-found=true"])
+
+    return {
+        "success": True,
+        "message": "Spring config agent executed.",
+        "namespace": namespace,
+        "workloadName": workloadName,
+        "workloadKind": workload_kind,
+        "debugPod": debug_pod_name,
+        "outputFile": output_file,
+        "payload": output_payload,
+    }
 
 
 if __name__ == "__main__":
