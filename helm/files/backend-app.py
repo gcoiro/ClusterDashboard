@@ -1436,29 +1436,28 @@ async def apply_spring_config_agent(
         )
         logger.debug("Copying agent output to %s", output_file)
         run_oc(["cp", f"{namespace}/{debug_pod_name}:{debug_output_path}", output_file])
-
-    try:
-        with open(output_file, "r") as f:
-            output_payload = json.load(f)
-    except Exception as exc:
-        logger.warning("Failed to parse agent output as JSON: %s", str(exc))
-        with open(output_file, "r") as f:
-            output_payload = f.read()
-    cache_key = f"spring-config-agent:{namespace}:{workloadName}"
-    if CACHE_TTL_SECONDS > 0:
         try:
-            cache_payload = output_payload
-            if not isinstance(cache_payload, str):
-                cache_payload = json.dumps(cache_payload)
-            redis_client = get_redis_client()
-            if redis_client is not None:
-                redis_client.setex(cache_key, CACHE_TTL_SECONDS, cache_payload.encode("utf-8"))
-                logger.debug("Spring config agent cache write (redis) %s", cache_key)
-            else:
-                _actuator_cache[cache_key] = (time.time() + CACHE_TTL_SECONDS, cache_payload)
-                logger.debug("Spring config agent cache write (memory) %s", cache_key)
+            with open(output_file, "r") as f:
+                output_payload = json.load(f)
         except Exception as exc:
-            logger.warning("Spring config agent cache write failed: %s", str(exc))
+            logger.warning("Failed to parse agent output as JSON: %s", str(exc))
+            with open(output_file, "r") as f:
+                output_payload = f.read()
+        cache_key = f"spring-config-agent:{namespace}:{workloadName}"
+        if CACHE_TTL_SECONDS > 0:
+            try:
+                cache_payload = output_payload
+                if not isinstance(cache_payload, str):
+                    cache_payload = json.dumps(cache_payload)
+                redis_client = get_redis_client()
+                if redis_client is not None:
+                    redis_client.setex(cache_key, CACHE_TTL_SECONDS, cache_payload.encode("utf-8"))
+                    logger.debug("Spring config agent cache write (redis) %s", cache_key)
+                else:
+                    _actuator_cache[cache_key] = (time.time() + CACHE_TTL_SECONDS, cache_payload)
+                    logger.debug("Spring config agent cache write (memory) %s", cache_key)
+            except Exception as exc:
+                logger.warning("Spring config agent cache write failed: %s", str(exc))
     finally:
         if debug_pod_created:
             run_oc_allow_timeout(
