@@ -1176,7 +1176,21 @@ async def apply_spring_config_agent(
     workloadName: str,
     request: Optional[ApplySpringConfigAgentRequest] = None,
 ):
+    logger.debug(
+        "Spring config agent env enabled=%s jarPath=%s outputDir=%s",
+        SPRING_CONFIG_AGENT_ENABLED,
+        SPRING_CONFIG_AGENT_JAR_PATH,
+        SPRING_CONFIG_AGENT_OUTPUT_DIR,
+    )
+    logger.debug(
+        "Spring config agent request payload workloadKind=%s",
+        request.workloadKind if request else None,
+    )
     if not SPRING_CONFIG_AGENT_ENABLED:
+        logger.warning(
+            "Spring config agent disabled; set SPRING_CONFIG_AGENT_ENABLED=true and mount jar at %s",
+            SPRING_CONFIG_AGENT_JAR_PATH,
+        )
         raise_structured_error(
             501,
             "agent_not_configured",
@@ -1195,6 +1209,15 @@ async def apply_spring_config_agent(
         workloadName,
         request.workloadKind if request else None,
     )
+    if not os.path.exists(SPRING_CONFIG_AGENT_JAR_PATH):
+        logger.error("Spring config agent jar missing at %s", SPRING_CONFIG_AGENT_JAR_PATH)
+    else:
+        try:
+            size = os.path.getsize(SPRING_CONFIG_AGENT_JAR_PATH)
+            logger.debug("Spring config agent jar sizeBytes=%s", size)
+        except OSError as exc:
+            logger.warning("Spring config agent jar stat failed: %s", str(exc))
+
     raise_structured_error(
         501,
         "agent_not_implemented",
