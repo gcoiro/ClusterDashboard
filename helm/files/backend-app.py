@@ -139,6 +139,29 @@ def run_oc(args, expect_json=False):
     return result.stdout
 
 
+def run_oc_input(args, input_data, expect_json=False):
+    logger.debug("oc %s", " ".join(args))
+    result = subprocess.run(
+        oc_base_args() + args,
+        input=input_data,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        logger.error("oc error (%s): %s", " ".join(args), detail)
+        status = 403 if "forbidden" in detail.lower() else 500
+        raise HTTPException(status_code=status, detail=f"oc error: {detail}")
+    if expect_json:
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            logger.error("oc json parse error (%s): %s", " ".join(args), str(exc))
+            raise HTTPException(status_code=500, detail=f"oc output parse error: {str(exc)}")
+    return result.stdout
+
+
 def run_oc_with_timeout(args, timeout_seconds=30, expect_json=False):
     logger.debug("oc %s", " ".join(args))
     result = subprocess.run(
@@ -412,6 +435,45 @@ def wait_for_pod_running(namespace: str, pod_name: str, timeout_seconds=60):
             return pod
         time.sleep(2)
     raise HTTPException(status_code=504, detail=f"Timed out waiting for debug pod {pod_name} to be running")
+
+
+def build_debug_pod_manifest(namespace: str, source_pod_name: str, debug_pod_name: str, image: str) -> dict:
+    debug_spec = run_oc(
+        [
+            "debug",
+            f"pod/{source_pod_name}",
+            "-n",
+            namespace,
+            "--image",
+            image,
+            "-o",
+            "json",
+            "--",
+            "/bin/sh",
+            "-c",
+            "sleep 3600",
+        ],
+        expect_json=True,
+    )
+    metadata = debug_spec.get("metadata", {}) or {}
+    metadata["name"] = debug_pod_name
+    metadata["namespace"] = namespace
+    for key in (
+        "uid",
+        "resourceVersion",
+        "generation",
+        "creationTimestamp",
+        "managedFields",
+    ):
+        metadata.pop(key, None)
+    metadata.pop("generateName", None)
+    debug_spec["metadata"] = metadata
+    return debug_spec
+
+
+def apply_debug_pod(manifest: dict):
+    payload = json.dumps(manifest)
+    return run_oc_input(["apply", "-f", "-"], payload)
 
 
 def get_services_map(namespace: str):
@@ -1337,23 +1399,13 @@ async def apply_spring_config_agent(
 
     debug_pod_created = False
     try:
-        run_oc_allow_timeout(
-            [
-                "debug",
-                f"pod/{target_pod_name}",
-                "-n",
-                namespace,
-                "--to-name",
-                debug_pod_name,
-                "--image",
-                target_image,
-                "--",
-                "/bin/sh",
-                "-c",
-                "sleep 3600",
-            ],
-            timeout_seconds=15,
+        debug_manifest = build_debug_pod_manifest(
+            namespace,
+            target_pod_name,
+            debug_pod_name,
+            target_image,
         )
+        apply_debug_pod(debug_manifest)
 
         wait_for_pod_running(namespace, debug_pod_name, timeout_seconds=90)
         debug_pod_created = True
