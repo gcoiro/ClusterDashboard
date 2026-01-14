@@ -307,11 +307,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (target.type === 'checkbox') {
             const field = target.dataset.field;
             const keyCard = annotation.closest('.report-key');
-            const isSelected = keyCard && keyCard.classList.contains('is-selected');
-            const selectedCards = isSelected ? getSelectedReportKeyCards() : [];
-            if (selectedCards.length > 1) {
+            const selectedCards = getSelectedReportKeyCards();
+            const openCards = getOpenReportKeyCards();
+            const bulkCards = selectedCards.length > 1 ? selectedCards : (openCards.length > 1 ? openCards : []);
+            if (bulkCards.length > 1) {
                 const shouldCheck = target.checked;
-                selectedCards.forEach(card => {
+                bulkCards.forEach(card => {
                     const cardMatchId = card.dataset.matchId;
                     if (!cardMatchId) {
                         return;
@@ -384,10 +385,11 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         const keyCard = annotation.closest('.report-key');
-        const isSelected = keyCard && keyCard.classList.contains('is-selected');
-        const selectedCards = isSelected ? getSelectedReportKeyCards() : [];
-        if (selectedCards.length > 1) {
-            selectedCards.forEach(card => {
+        const selectedCards = getSelectedReportKeyCards();
+        const openCards = getOpenReportKeyCards();
+        const bulkCards = selectedCards.length > 1 ? selectedCards : (openCards.length > 1 ? openCards : []);
+        if (bulkCards.length > 1) {
+            bulkCards.forEach(card => {
                 const cardMatchId = card.dataset.matchId;
                 if (!cardMatchId) {
                     return;
@@ -2014,6 +2016,13 @@ function getSelectedReportKeyCards() {
         return [];
     }
     return Array.from(reportResults.querySelectorAll('.report-key.is-selected'));
+}
+
+function getOpenReportKeyCards() {
+    if (!reportResults) {
+        return [];
+    }
+    return Array.from(reportResults.querySelectorAll('.report-key.is-open'));
 }
 
 function getEventTargetElement(event) {
