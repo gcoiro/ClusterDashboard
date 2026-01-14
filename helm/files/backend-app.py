@@ -1343,7 +1343,7 @@ async def apply_spring_config_agent(
                 f"pod/{target_pod_name}",
                 "-n",
                 namespace,
-                "--copy-to",
+                "--to-name",
                 debug_pod_name,
                 "--image",
                 target_image,
