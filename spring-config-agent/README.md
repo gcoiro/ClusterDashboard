@@ -21,3 +21,7 @@ java -jar spring-config-agent/target/spring-config-agent-0.1.0.jar output=/tmp/s
 Arguments:
 - `output`: file path to write JSON (defaults to stdout)
 - `maxChars`: maximum characters captured per file/resource (default 200000)
+- `maxFiles`: max config files captured during filesystem scan (default 120)
+- `maxJars`: max jars inspected during jar scan (default 20)
+- `maxDepth`: max directory depth when scanning files/jars (default 6)
+- `searchPaths`: extra semicolon/comma-separated paths to scan

@@ -27,6 +27,9 @@ import java.util.TreeMap;
 
 public class SpringConfigAgent {
     private static final int DEFAULT_MAX_CHARS = 200_000;
+    private static final int DEFAULT_MAX_FILES = 120;
+    private static final int DEFAULT_MAX_JARS = 20;
+    private static final int DEFAULT_MAX_DEPTH = 6;
     private static final List<String> RESOURCE_NAMES = Arrays.asList(
         "application.properties",
         "application.yml",
@@ -40,6 +43,21 @@ public class SpringConfigAgent {
         "config/bootstrap.properties",
         "config/bootstrap.yml",
         "config/bootstrap.yaml"
+    );
+    private static final List<String> DEFAULT_SEARCH_DIRS = Arrays.asList(
+        ".",
+        "./config",
+        "/app",
+        "/app/config",
+        "/deployments",
+        "/deployments/config",
+        "/opt/app",
+        "/opt/app/config",
+        "/workspace",
+        "/workspace/config",
+        "/usr/app",
+        "/usr/app/config",
+        "/config"
     );
 
     public static void premain(String agentArgs, Instrumentation instrumentation) {
@@ -65,13 +83,18 @@ public class SpringConfigAgent {
                 maxChars = DEFAULT_MAX_CHARS;
             }
         }
+        int maxFiles = parseIntArg(argsMap.get("maxFiles"), DEFAULT_MAX_FILES);
+        int maxJars = parseIntArg(argsMap.get("maxJars"), DEFAULT_MAX_JARS);
+        int maxDepth = parseIntArg(argsMap.get("maxDepth"), DEFAULT_MAX_DEPTH);
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("metadata", buildMetadata(agentArgs, maxChars));
         payload.put("systemProperties", buildSystemProperties());
         payload.put("environment", buildEnvironment());
         payload.put("classpathResources", buildClasspathResources(maxChars));
-        payload.put("files", buildFilesystemMatches(maxChars));
+        payload.put("files", buildFilesystemMatches(maxChars, maxFiles, maxDepth, argsMap));
+        payload.put("jarResources", buildJarResourceMatches(maxChars, maxJars, maxDepth, argsMap));
+        payload.put("configServer", fetchConfigServer(maxChars));
 
         String json = toJson(payload);
         String outputPath = argsMap.get("output");
@@ -141,39 +164,76 @@ public class SpringConfigAgent {
         return result;
     }
 
-    private static Map<String, Object> buildFilesystemMatches(int maxChars) {
+    private static Map<String, Object> buildFilesystemMatches(
+        int maxChars,
+        int maxFiles,
+        int maxDepth,
+        Map<String, String> argsMap
+    ) {
         Map<String, Object> data = new LinkedHashMap<>();
         List<String> searchPaths = new ArrayList<>();
         List<Map<String, Object>> matches = new ArrayList<>();
 
-        List<Path> basePaths = new ArrayList<>();
-        String userDir = System.getProperty("user.dir", "");
-        if (!userDir.isEmpty()) {
-            basePaths.add(Paths.get(userDir));
-            basePaths.add(Paths.get(userDir, "config"));
-        }
-        basePaths.addAll(resolveSpringConfigPaths());
+        List<Path> basePaths = resolveSearchRoots(argsMap);
 
         for (Path base : basePaths) {
             searchPaths.add(base.toString());
-            for (String resourceName : RESOURCE_NAMES) {
-                Path candidate = base.resolve(resourceName);
-                if (!Files.exists(candidate) || !Files.isRegularFile(candidate)) {
-                    continue;
-                }
-                ContentPayload payload = readFile(candidate, maxChars);
-                Map<String, Object> entry = new LinkedHashMap<>();
-                entry.put("path", candidate.toString());
-                entry.put("sizeBytes", payload.sizeBytes);
-                entry.put("truncated", payload.truncated);
-                entry.put("content", payload.content);
-                matches.add(entry);
+            matches.addAll(findConfigFiles(base, maxChars, maxFiles, maxDepth, matches.size()));
+            if (matches.size() >= maxFiles) {
+                break;
             }
         }
 
         data.put("searchPaths", searchPaths);
         data.put("matches", matches);
         return data;
+    }
+
+    private static Map<String, Object> buildJarResourceMatches(
+        int maxChars,
+        int maxJars,
+        int maxDepth,
+        Map<String, String> argsMap
+    ) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        List<String> searchPaths = new ArrayList<>();
+        List<Map<String, Object>> matches = new ArrayList<>();
+        List<Path> basePaths = resolveSearchRoots(argsMap);
+
+        for (Path base : basePaths) {
+            searchPaths.add(base.toString());
+            matches.addAll(findJarResources(base, maxChars, maxJars, maxDepth, matches.size()));
+            if (matches.size() >= maxJars) {
+                break;
+            }
+        }
+
+        data.put("searchPaths", searchPaths);
+        data.put("matches", matches);
+        return data;
+    }
+
+    private static List<Path> resolveSearchRoots(Map<String, String> argsMap) {
+        List<Path> basePaths = new ArrayList<>();
+        String userDir = System.getProperty("user.dir", "");
+        if (!userDir.isEmpty()) {
+            basePaths.add(Paths.get(userDir));
+            basePaths.add(Paths.get(userDir, "config"));
+        }
+        for (String pathValue : DEFAULT_SEARCH_DIRS) {
+            basePaths.add(Paths.get(pathValue));
+        }
+        basePaths.addAll(resolveSpringConfigPaths());
+        String argPaths = argsMap.get("searchPaths");
+        if (argPaths != null && !argPaths.trim().isEmpty()) {
+            for (String token : argPaths.split("[,;]")) {
+                String trimmed = token.trim();
+                if (!trimmed.isEmpty()) {
+                    basePaths.add(Paths.get(trimmed));
+                }
+            }
+        }
+        return basePaths;
     }
 
     private static List<Path> resolveSpringConfigPaths() {
@@ -199,6 +259,186 @@ public class SpringConfigAgent {
             paths.add(Paths.get(normalized));
         }
         return paths;
+    }
+
+    private static List<Map<String, Object>> findConfigFiles(
+        Path base,
+        int maxChars,
+        int maxFiles,
+        int maxDepth,
+        int alreadyFound
+    ) {
+        List<Map<String, Object>> matches = new ArrayList<>();
+        if (!Files.exists(base)) {
+            return matches;
+        }
+        try {
+            Files.walk(base, Math.max(1, maxDepth))
+                .filter(path -> Files.isRegularFile(path))
+                .filter(SpringConfigAgent::isConfigFileName)
+                .forEach(path -> {
+                    if (matches.size() + alreadyFound >= maxFiles) {
+                        return;
+                    }
+                    ContentPayload payload = readFile(path, maxChars);
+                    Map<String, Object> entry = new LinkedHashMap<>();
+                    entry.put("path", path.toString());
+                    entry.put("sizeBytes", payload.sizeBytes);
+                    entry.put("truncated", payload.truncated);
+                    entry.put("content", payload.content);
+                    matches.add(entry);
+                });
+        } catch (IOException ignored) {
+            return matches;
+        }
+        return matches;
+    }
+
+    private static List<Map<String, Object>> findJarResources(
+        Path base,
+        int maxChars,
+        int maxJars,
+        int maxDepth,
+        int alreadyFound
+    ) {
+        List<Map<String, Object>> matches = new ArrayList<>();
+        if (!Files.exists(base)) {
+            return matches;
+        }
+        try {
+            Files.walk(base, Math.max(1, maxDepth))
+                .filter(path -> Files.isRegularFile(path))
+                .filter(path -> path.toString().endsWith(".jar"))
+                .forEach(path -> {
+                    if (matches.size() + alreadyFound >= maxJars) {
+                        return;
+                    }
+                    Map<String, Object> entry = readJarConfigEntries(path, maxChars);
+                    if (entry != null) {
+                        matches.add(entry);
+                    }
+                });
+        } catch (IOException ignored) {
+            return matches;
+        }
+        return matches;
+    }
+
+    private static Map<String, Object> readJarConfigEntries(Path jarPath, int maxChars) {
+        try (java.util.jar.JarFile jarFile = new java.util.jar.JarFile(jarPath.toFile())) {
+            Map<String, Object> jarEntry = new LinkedHashMap<>();
+            jarEntry.put("jarPath", jarPath.toString());
+            List<Map<String, Object>> entries = new ArrayList<>();
+            java.util.Enumeration<java.util.jar.JarEntry> jarEntries = jarFile.entries();
+            while (jarEntries.hasMoreElements()) {
+                java.util.jar.JarEntry entry = jarEntries.nextElement();
+                String name = entry.getName();
+                if (isConfigResourceName(name)) {
+                    ContentPayload payload = readStream(jarFile.getInputStream(entry), maxChars);
+                    Map<String, Object> record = new LinkedHashMap<>();
+                    record.put("name", name);
+                    record.put("sizeBytes", payload.sizeBytes);
+                    record.put("truncated", payload.truncated);
+                    record.put("content", payload.content);
+                    entries.add(record);
+                }
+            }
+            if (entries.isEmpty()) {
+                return null;
+            }
+            jarEntry.put("entries", entries);
+            return jarEntry;
+        } catch (IOException ignored) {
+            return null;
+        }
+    }
+
+    private static boolean isConfigFileName(Path path) {
+        String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        return isConfigBaseName(name);
+    }
+
+    private static boolean isConfigResourceName(String name) {
+        String normalized = name.toLowerCase(Locale.ROOT);
+        int lastSlash = normalized.lastIndexOf('/');
+        String baseName = lastSlash >= 0 ? normalized.substring(lastSlash + 1) : normalized;
+        return isConfigBaseName(baseName);
+    }
+
+    private static boolean isConfigBaseName(String baseName) {
+        return baseName.startsWith("application")
+            && (baseName.endsWith(".yml") || baseName.endsWith(".yaml") || baseName.endsWith(".properties"))
+            || baseName.startsWith("bootstrap")
+            && (baseName.endsWith(".yml") || baseName.endsWith(".yaml") || baseName.endsWith(".properties"));
+    }
+
+    private static Map<String, Object> fetchConfigServer(int maxChars) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        String configServerUrl = resolveConfigServerUrl();
+        if (configServerUrl == null || configServerUrl.isEmpty()) {
+            return data;
+        }
+        String appName = firstNonEmpty(
+            System.getenv("SPRING_APPLICATION_NAME"),
+            System.getenv("SPRING_CLOUD_CONFIG_NAME")
+        );
+        if (appName == null || appName.isEmpty()) {
+            appName = "application";
+        }
+        String profile = firstNonEmpty(
+            System.getenv("SPRING_PROFILES_ACTIVE"),
+            System.getenv("SPRING_CLOUD_CONFIG_PROFILE")
+        );
+        if (profile == null || profile.isEmpty()) {
+            profile = "default";
+        }
+
+        String requestUrl = configServerUrl;
+        if (!requestUrl.endsWith("/")) {
+            requestUrl += "/";
+        }
+        requestUrl += appName + "/" + profile;
+
+        data.put("url", requestUrl);
+        try {
+            URL url = new URL(requestUrl);
+            java.net.HttpURLConnection connection = (java.net.HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(5000);
+            connection.setReadTimeout(5000);
+            String username = System.getenv("SPRING_CLOUD_CONFIG_USERNAME");
+            String password = System.getenv("SPRING_CLOUD_CONFIG_PASSWORD");
+            if (username != null && !username.isEmpty() && password != null) {
+                String token = java.util.Base64.getEncoder().encodeToString(
+                    (username + ":" + password).getBytes(StandardCharsets.UTF_8)
+                );
+                connection.setRequestProperty("Authorization", "Basic " + token);
+            }
+            int status = connection.getResponseCode();
+            data.put("status", status);
+            InputStream stream = status >= 200 && status < 300
+                ? connection.getInputStream()
+                : connection.getErrorStream();
+            if (stream != null) {
+                ContentPayload payload = readStream(stream, maxChars);
+                data.put("truncated", payload.truncated);
+                data.put("content", payload.content);
+            }
+        } catch (Exception exc) {
+            data.put("error", exc.getMessage());
+        }
+        return data;
+    }
+
+    private static String resolveConfigServerUrl() {
+        String importValue = System.getenv("SPRING_CONFIG_IMPORT");
+        if (importValue != null && importValue.contains("configserver:")) {
+            int idx = importValue.indexOf("configserver:");
+            String url = importValue.substring(idx + "configserver:".length()).trim();
+            url = url.replaceFirst("^optional:", "");
+            return url;
+        }
+        String uri = System.getenv("SPRING_CLOUD_CONFIG_URI");
+        return uri != null ? uri.trim() : null;
     }
 
     private static ContentPayload readFile(Path path, int maxChars) {
@@ -285,6 +525,17 @@ public class SpringConfigAgent {
             }
         }
         return args;
+    }
+
+    private static int parseIntArg(String value, int fallback) {
+        if (value == null || value.trim().isEmpty()) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
     }
 
     private static String resolvePid() {
