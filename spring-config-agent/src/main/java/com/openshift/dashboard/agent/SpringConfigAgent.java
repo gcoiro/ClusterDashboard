@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -91,10 +92,13 @@ public class SpringConfigAgent {
         payload.put("metadata", buildMetadata(agentArgs, maxChars));
         payload.put("systemProperties", buildSystemProperties());
         payload.put("environment", buildEnvironment());
-        payload.put("classpathResources", buildClasspathResources(maxChars));
-        payload.put("files", buildFilesystemMatches(maxChars, maxFiles, maxDepth, argsMap));
-        payload.put("jarResources", buildJarResourceMatches(maxChars, maxJars, maxDepth, argsMap));
-        payload.put("configServer", fetchConfigServer(maxChars));
+        Map<String, Object> classpathResources = buildClasspathResources(maxChars);
+        Map<String, Object> fileResources = buildFilesystemMatches(maxChars, maxFiles, maxDepth, argsMap);
+        Map<String, Object> jarResources = buildJarResourceMatches(maxChars, maxJars, maxDepth, argsMap);
+        payload.put("classpathResources", classpathResources);
+        payload.put("files", fileResources);
+        payload.put("jarResources", jarResources);
+        payload.put("configServer", fetchConfigServer(maxChars, classpathResources, fileResources, jarResources));
 
         String json = toJson(payload);
         String outputPath = argsMap.get("output");
@@ -366,15 +370,21 @@ public class SpringConfigAgent {
     }
 
     private static boolean isConfigBaseName(String baseName) {
-        return baseName.startsWith("application")
-            && (baseName.endsWith(".yml") || baseName.endsWith(".yaml") || baseName.endsWith(".properties"))
-            || baseName.startsWith("bootstrap")
-            && (baseName.endsWith(".yml") || baseName.endsWith(".yaml") || baseName.endsWith(".properties"));
+        return (baseName.startsWith("application")
+            && (baseName.endsWith(".yml") || baseName.endsWith(".yaml") || baseName.endsWith(".properties")))
+            || (baseName.startsWith("bootstrap")
+            && (baseName.endsWith(".yml") || baseName.endsWith(".yaml") || baseName.endsWith(".properties")));
     }
 
-    private static Map<String, Object> fetchConfigServer(int maxChars) {
+    private static Map<String, Object> fetchConfigServer(
+        int maxChars,
+        Map<String, Object> classpathResources,
+        Map<String, Object> fileResources,
+        Map<String, Object> jarResources
+    ) {
         Map<String, Object> data = new LinkedHashMap<>();
-        String configServerUrl = resolveConfigServerUrl();
+        ConfigHints hints = buildConfigHints(classpathResources, fileResources, jarResources);
+        String configServerUrl = resolveConfigServerUrl(hints);
         if (configServerUrl == null || configServerUrl.isEmpty()) {
             return data;
         }
@@ -383,14 +393,14 @@ public class SpringConfigAgent {
             System.getenv("SPRING_CLOUD_CONFIG_NAME")
         );
         if (appName == null || appName.isEmpty()) {
-            appName = "application";
+            appName = firstNonEmpty(hints.applicationName, "application");
         }
         String profile = firstNonEmpty(
             System.getenv("SPRING_PROFILES_ACTIVE"),
             System.getenv("SPRING_CLOUD_CONFIG_PROFILE")
         );
         if (profile == null || profile.isEmpty()) {
-            profile = "default";
+            profile = firstNonEmpty(hints.profile, "default");
         }
 
         String requestUrl = configServerUrl;
@@ -400,13 +410,20 @@ public class SpringConfigAgent {
         requestUrl += appName + "/" + profile;
 
         data.put("url", requestUrl);
+        data.put("source", hints.source);
         try {
             URL url = new URL(requestUrl);
             java.net.HttpURLConnection connection = (java.net.HttpURLConnection) url.openConnection();
             connection.setConnectTimeout(5000);
             connection.setReadTimeout(5000);
-            String username = System.getenv("SPRING_CLOUD_CONFIG_USERNAME");
-            String password = System.getenv("SPRING_CLOUD_CONFIG_PASSWORD");
+            String username = firstNonEmpty(
+                System.getenv("SPRING_CLOUD_CONFIG_USERNAME"),
+                hints.username
+            );
+            String password = firstNonEmpty(
+                System.getenv("SPRING_CLOUD_CONFIG_PASSWORD"),
+                hints.password
+            );
             if (username != null && !username.isEmpty() && password != null) {
                 String token = java.util.Base64.getEncoder().encodeToString(
                     (username + ":" + password).getBytes(StandardCharsets.UTF_8)
@@ -429,7 +446,7 @@ public class SpringConfigAgent {
         return data;
     }
 
-    private static String resolveConfigServerUrl() {
+    private static String resolveConfigServerUrl(ConfigHints hints) {
         String importValue = System.getenv("SPRING_CONFIG_IMPORT");
         if (importValue != null && importValue.contains("configserver:")) {
             int idx = importValue.indexOf("configserver:");
@@ -438,7 +455,18 @@ public class SpringConfigAgent {
             return url;
         }
         String uri = System.getenv("SPRING_CLOUD_CONFIG_URI");
-        return uri != null ? uri.trim() : null;
+        if (uri != null && !uri.trim().isEmpty()) {
+            return uri.trim();
+        }
+        if (hints.configImport != null && hints.configImport.contains("configserver:")) {
+            int idx = hints.configImport.indexOf("configserver:");
+            String url = hints.configImport.substring(idx + "configserver:".length()).trim();
+            return url.replaceFirst("^optional:", "");
+        }
+        if (hints.configUri != null && !hints.configUri.isEmpty()) {
+            return hints.configUri;
+        }
+        return null;
     }
 
     private static ContentPayload readFile(Path path, int maxChars) {
@@ -563,6 +591,269 @@ public class SpringConfigAgent {
             return second.trim();
         }
         return null;
+    }
+
+    private static String firstNonEmpty(String first, String second, String fallback) {
+        String value = firstNonEmpty(first, second);
+        if (value != null && !value.isEmpty()) {
+            return value;
+        }
+        return fallback;
+    }
+
+    private static ConfigHints buildConfigHints(
+        Map<String, Object> classpathResources,
+        Map<String, Object> fileResources,
+        Map<String, Object> jarResources
+    ) {
+        List<ConfigCandidate> candidates = new ArrayList<>();
+        candidates.addAll(extractCandidatesFromClasspath(classpathResources));
+        candidates.addAll(extractCandidatesFromFiles(fileResources));
+        candidates.addAll(extractCandidatesFromJars(jarResources));
+
+        ConfigHints hints = new ConfigHints();
+        candidates.sort((a, b) -> Integer.compare(a.priority, b.priority));
+        for (ConfigCandidate candidate : candidates) {
+            Map<String, String> values = parseConfigValues(candidate.content, candidate.isYaml);
+            if (hints.configImport == null) {
+                hints.configImport = values.get("spring.config.import");
+            }
+            if (hints.configUri == null) {
+                hints.configUri = values.get("spring.cloud.config.uri");
+            }
+            if (hints.username == null) {
+                hints.username = values.get("spring.cloud.config.username");
+            }
+            if (hints.password == null) {
+                hints.password = values.get("spring.cloud.config.password");
+            }
+            if (hints.applicationName == null) {
+                hints.applicationName = values.get("spring.application.name");
+            }
+            if (hints.profile == null) {
+                hints.profile = values.get("spring.profiles.active");
+            }
+            if (hints.source == null && !values.isEmpty()) {
+                hints.source = candidate.source;
+            }
+            if (hints.isComplete()) {
+                break;
+            }
+        }
+        return hints;
+    }
+
+    private static List<ConfigCandidate> extractCandidatesFromClasspath(Map<String, Object> classpathResources) {
+        List<ConfigCandidate> candidates = new ArrayList<>();
+        for (Map.Entry<String, Object> entry : classpathResources.entrySet()) {
+            Object value = entry.getValue();
+            if (!(value instanceof List)) {
+                continue;
+            }
+            for (Object item : (List<?>) value) {
+                if (!(item instanceof Map)) {
+                    continue;
+                }
+                Map<?, ?> data = (Map<?, ?>) item;
+                String name = String.valueOf(data.get("name"));
+                String content = String.valueOf(data.get("content"));
+                if (content.isEmpty()) {
+                    continue;
+                }
+                candidates.add(buildCandidate(name, content, "classpath:" + name));
+            }
+        }
+        return candidates;
+    }
+
+    private static List<ConfigCandidate> extractCandidatesFromFiles(Map<String, Object> fileResources) {
+        List<ConfigCandidate> candidates = new ArrayList<>();
+        Object raw = fileResources.get("matches");
+        if (!(raw instanceof List)) {
+            return candidates;
+        }
+        for (Object item : (List<?>) raw) {
+            if (!(item instanceof Map)) {
+                continue;
+            }
+            Map<?, ?> data = (Map<?, ?>) item;
+            String path = String.valueOf(data.get("path"));
+            String content = String.valueOf(data.get("content"));
+            if (content.isEmpty()) {
+                continue;
+            }
+            candidates.add(buildCandidate(path, content, path));
+        }
+        return candidates;
+    }
+
+    private static List<ConfigCandidate> extractCandidatesFromJars(Map<String, Object> jarResources) {
+        List<ConfigCandidate> candidates = new ArrayList<>();
+        Object raw = jarResources.get("matches");
+        if (!(raw instanceof List)) {
+            return candidates;
+        }
+        for (Object jarItem : (List<?>) raw) {
+            if (!(jarItem instanceof Map)) {
+                continue;
+            }
+            Map<?, ?> jarMap = (Map<?, ?>) jarItem;
+            String jarPath = String.valueOf(jarMap.get("jarPath"));
+            Object entries = jarMap.get("entries");
+            if (!(entries instanceof List)) {
+                continue;
+            }
+            for (Object entryObj : (List<?>) entries) {
+                if (!(entryObj instanceof Map)) {
+                    continue;
+                }
+                Map<?, ?> entry = (Map<?, ?>) entryObj;
+                String name = String.valueOf(entry.get("name"));
+                String content = String.valueOf(entry.get("content"));
+                if (content.isEmpty()) {
+                    continue;
+                }
+                candidates.add(buildCandidate(name, content, jarPath + "!" + name));
+            }
+        }
+        return candidates;
+    }
+
+    private static ConfigCandidate buildCandidate(String name, String content, String source) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        boolean isYaml = lower.endsWith(".yml") || lower.endsWith(".yaml");
+        int priority = lower.contains("bootstrap") ? 0 : 1;
+        return new ConfigCandidate(priority, content, isYaml, source);
+    }
+
+    private static Map<String, String> parseConfigValues(String content, boolean isYaml) {
+        if (content == null || content.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        if (isYaml) {
+            return parseYamlValues(content);
+        }
+        return parsePropertiesValues(content);
+    }
+
+    private static Map<String, String> parsePropertiesValues(String content) {
+        Map<String, String> values = new HashMap<>();
+        String[] lines = content.split("\n");
+        for (String rawLine : lines) {
+            String line = rawLine.trim();
+            if (line.isEmpty() || line.startsWith("#") || line.startsWith("!")) {
+                continue;
+            }
+            int idx = line.indexOf('=');
+            if (idx < 0) {
+                idx = line.indexOf(':');
+            }
+            if (idx < 0) {
+                continue;
+            }
+            String key = line.substring(0, idx).trim();
+            String value = line.substring(idx + 1).trim();
+            if (!key.isEmpty() && !value.isEmpty()) {
+                values.put(key, stripQuotes(value));
+            }
+        }
+        return values;
+    }
+
+    private static Map<String, String> parseYamlValues(String content) {
+        Map<String, String> values = new HashMap<>();
+        List<String> path = new ArrayList<>();
+        String[] lines = content.split("\n");
+        int[] indents = new int[0];
+
+        for (String rawLine : lines) {
+            String line = rawLine;
+            int hashIndex = line.indexOf('#');
+            if (hashIndex >= 0) {
+                line = line.substring(0, hashIndex);
+            }
+            if (line.trim().isEmpty()) {
+                continue;
+            }
+            int indent = countLeadingSpaces(line);
+            String trimmed = line.trim();
+            if (trimmed.startsWith("-")) {
+                continue;
+            }
+            String[] parts = trimmed.split(":", 2);
+            if (parts.length == 0) {
+                continue;
+            }
+            String key = parts[0].trim();
+            String value = parts.length > 1 ? parts[1].trim() : "";
+
+            while (path.size() > 0 && indents[path.size() - 1] >= indent) {
+                path.remove(path.size() - 1);
+            }
+            if (value.isEmpty()) {
+                path.add(key);
+                if (indents.length < path.size()) {
+                    indents = Arrays.copyOf(indents, path.size());
+                }
+                indents[path.size() - 1] = indent;
+                continue;
+            }
+            List<String> full = new ArrayList<>(path);
+            full.add(key);
+            String compound = String.join(".", full);
+            values.put(compound, stripQuotes(value));
+        }
+        return values;
+    }
+
+    private static int countLeadingSpaces(String value) {
+        int count = 0;
+        while (count < value.length() && value.charAt(count) == ' ') {
+            count += 1;
+        }
+        return count;
+    }
+
+    private static String stripQuotes(String value) {
+        String trimmed = value.trim();
+        if ((trimmed.startsWith("\"") && trimmed.endsWith("\""))
+            || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+            return trimmed.substring(1, trimmed.length() - 1);
+        }
+        return trimmed;
+    }
+
+    private static class ConfigCandidate {
+        private final int priority;
+        private final String content;
+        private final boolean isYaml;
+        private final String source;
+
+        private ConfigCandidate(int priority, String content, boolean isYaml, String source) {
+            this.priority = priority;
+            this.content = content;
+            this.isYaml = isYaml;
+            this.source = source;
+        }
+    }
+
+    private static class ConfigHints {
+        private String configImport;
+        private String configUri;
+        private String username;
+        private String password;
+        private String applicationName;
+        private String profile;
+        private String source;
+
+        private boolean isComplete() {
+            return configImport != null
+                && configUri != null
+                && username != null
+                && password != null
+                && applicationName != null
+                && profile != null;
+        }
     }
 
     private static String toJson(Object value) {
