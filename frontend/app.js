@@ -3419,27 +3419,38 @@ async function applySpringConfigAgentBulk(targets, options = {}) {
         triggerButton.disabled = true;
     }
 
+    const batchSize = 10;
     let successCount = 0;
     let failureCount = 0;
 
-    for (let i = 0; i < targets.length; i += 1) {
-        const target = targets[i];
+    for (let start = 0; start < targets.length; start += batchSize) {
+        const batch = targets.slice(start, start + batchSize);
+        const end = Math.min(start + batch.length, targets.length);
         if (triggerButton) {
-            triggerButton.textContent = `Applying... ${i + 1}/${targets.length}`;
+            triggerButton.textContent = `Applying... ${end}/${targets.length}`;
         }
-        setReportStatus(`Applying Spring Config Agent (${i + 1}/${targets.length})...`, 'info');
-        const buttonEl = buttonResolver ? buttonResolver(target) : null;
-        const ok = await applySpringConfigAgent(
-            target.namespace,
-            target.workloadName,
-            target.workloadKind,
-            buttonEl,
+        setReportStatus(
+            `Applying Spring Config Agent (${start + 1}-${end}/${targets.length})...`,
+            'info',
         );
-        if (ok) {
-            successCount += 1;
-        } else {
-            failureCount += 1;
-        }
+
+        const results = await Promise.all(batch.map(target => {
+            const buttonEl = buttonResolver ? buttonResolver(target) : null;
+            return applySpringConfigAgent(
+                target.namespace,
+                target.workloadName,
+                target.workloadKind,
+                buttonEl,
+            );
+        }));
+
+        results.forEach(ok => {
+            if (ok) {
+                successCount += 1;
+            } else {
+                failureCount += 1;
+            }
+        });
     }
 
     if (failureCount) {
