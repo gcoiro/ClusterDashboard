@@ -26,6 +26,7 @@
                         <manifestEntries>
                             <Premain-Class>com.openshift.dashboard.agent.SpringConfigAgent</Premain-Class>
                             <Agent-Class>com.openshift.dashboard.agent.SpringConfigAgent</Agent-Class>
+                            <Main-Class>com.openshift.dashboard.agent.SpringConfigAgent</Main-Class>
                             <Can-Redefine-Classes>false</Can-Redefine-Classes>
                             <Can-Retransform-Classes>false</Can-Retransform-Classes>
                         </manifestEntries>
