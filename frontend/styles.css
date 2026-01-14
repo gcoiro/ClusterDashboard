@@ -618,6 +618,27 @@ header h1 {
     cursor: pointer;
 }
 
+.report-namespace-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    font-weight: 700;
+    color: var(--ink);
+    margin-bottom: 10px;
+}
+
+.report-namespace-summary-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.report-namespace-name {
+    font-weight: inherit;
+}
+
 .report-namespace-title {
     font-weight: 700;
     color: var(--ink);

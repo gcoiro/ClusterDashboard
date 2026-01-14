@@ -33,6 +33,8 @@ const reportDownload = document.getElementById('report-download');
 const reportCollapseNs = document.getElementById('report-collapse-ns');
 const reportCollapseApps = document.getElementById('report-collapse-apps');
 const reportCollapseErrors = document.getElementById('report-collapse-errors');
+const reportSelectKeys = document.getElementById('report-select-keys');
+const reportClearSelection = document.getElementById('report-clear-selection');
 const reportPattern = document.getElementById('report-pattern');
 const reportScope = document.getElementById('report-scope');
 const reportCase = document.getElementById('report-case');
@@ -179,6 +181,18 @@ document.addEventListener('DOMContentLoaded', () => {
         collapseErrorApplications();
     });
 
+    if (reportSelectKeys) {
+        reportSelectKeys.addEventListener('click', () => {
+            setReportKeySelection(true);
+        });
+    }
+
+    if (reportClearSelection) {
+        reportClearSelection.addEventListener('click', () => {
+            setReportKeySelection(false);
+        });
+    }
+
     reportPattern.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
             runSpringConfigReport();
@@ -246,6 +260,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!target) {
             return;
         }
+        const namespaceButton = target.closest('button[data-namespace-action]');
+        if (namespaceButton) {
+            event.preventDefault();
+            event.stopPropagation();
+            const action = namespaceButton.dataset.namespaceAction;
+            const namespace = namespaceButton.dataset.namespace;
+            if (namespace && (action === 'select' || action === 'clear')) {
+                setNamespaceReportKeySelection(namespace, action === 'select');
+            }
+            return;
+        }
         const keyCard = target.closest('.report-key');
         if (!keyCard || !reportResults.contains(keyCard)) {
             return;
@@ -307,12 +332,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (target.type === 'checkbox') {
             const field = target.dataset.field;
             const keyCard = annotation.closest('.report-key');
-            const selectedCards = getSelectedReportKeyCards();
-            const openCards = getOpenReportKeyCards();
-            const bulkCards = selectedCards.length > 1 ? selectedCards : (openCards.length > 1 ? openCards : []);
-            if (bulkCards.length > 1) {
+            const isSelected = keyCard && keyCard.classList.contains('is-selected');
+            const selectedCards = isSelected ? getSelectedReportKeyCards() : [];
+            if (selectedCards.length > 1) {
                 const shouldCheck = target.checked;
-                bulkCards.forEach(card => {
+                selectedCards.forEach(card => {
                     const cardMatchId = card.dataset.matchId;
                     if (!cardMatchId) {
                         return;
@@ -385,11 +409,10 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         const keyCard = annotation.closest('.report-key');
-        const selectedCards = getSelectedReportKeyCards();
-        const openCards = getOpenReportKeyCards();
-        const bulkCards = selectedCards.length > 1 ? selectedCards : (openCards.length > 1 ? openCards : []);
-        if (bulkCards.length > 1) {
-            bulkCards.forEach(card => {
+        const isSelected = keyCard && keyCard.classList.contains('is-selected');
+        const selectedCards = isSelected ? getSelectedReportKeyCards() : [];
+        if (selectedCards.length > 1) {
+            selectedCards.forEach(card => {
                 const cardMatchId = card.dataset.matchId;
                 if (!cardMatchId) {
                     return;
@@ -1097,15 +1120,21 @@ function renderMultiNamespaceResultsView(reports) {
     const hasExisting = Boolean(reportResults.querySelector('.report-namespace'));
     const openAppsByNamespace = getOpenAppCardsByNamespace();
 
-    preserveReportScroll(() => {
-        reportResults.innerHTML = reports.map(report => `
-            <details class="report-namespace" data-namespace="${escapeHtml(report.namespace)}" ${!hasExisting || openNamespaces.has(report.namespace) ? 'open' : ''}>
-                <summary class="report-namespace-title">${escapeHtml(report.namespace)}</summary>
-                <div class="report-namespace-body">${buildReportCards(report.data, openAppsByNamespace.has(report.namespace) ? openAppsByNamespace.get(report.namespace) : null)}</div>
-            </details>
-        `).join('');
-    });
-}
+      preserveReportScroll(() => {
+          reportResults.innerHTML = reports.map(report => `
+              <details class="report-namespace" data-namespace="${escapeHtml(report.namespace)}" ${!hasExisting || openNamespaces.has(report.namespace) ? 'open' : ''}>
+                  <summary class="report-namespace-summary">
+                      <span class="report-namespace-name">${escapeHtml(report.namespace)}</span>
+                      <span class="report-namespace-summary-actions">
+                          <button type="button" class="btn btn-secondary" data-namespace-action="select" data-namespace="${escapeHtml(report.namespace)}">Select all</button>
+                          <button type="button" class="btn btn-secondary" data-namespace-action="clear" data-namespace="${escapeHtml(report.namespace)}">Clear selection</button>
+                      </span>
+                  </summary>
+                  <div class="report-namespace-body">${buildReportCards(report.data, openAppsByNamespace.has(report.namespace) ? openAppsByNamespace.get(report.namespace) : null)}</div>
+              </details>
+          `).join('');
+      });
+  }
 
 function getOpenAppCardsByNamespace() {
     const results = new Map();
@@ -2058,18 +2087,37 @@ function setReportKeySelected(keyCard, isSelected) {
     keyCard.setAttribute('aria-selected', isSelected ? 'true' : 'false');
 }
 
+function setReportKeySelection(shouldSelect) {
+    if (!reportResults) {
+        return;
+    }
+    const keys = reportResults.querySelectorAll('.report-key');
+    keys.forEach(keyCard => {
+        setReportKeySelected(keyCard, shouldSelect);
+    });
+}
+
+function setNamespaceReportKeySelection(namespace, shouldSelect) {
+    if (!reportResults) {
+        return;
+    }
+    const namespaceDetails = reportResults.querySelectorAll('.report-namespace');
+    namespaceDetails.forEach(detail => {
+        if (detail.dataset.namespace !== namespace) {
+            return;
+        }
+        const keys = detail.querySelectorAll('.report-key');
+        keys.forEach(keyCard => {
+            setReportKeySelected(keyCard, shouldSelect);
+        });
+    });
+}
+
 function getSelectedReportKeyCards() {
     if (!reportResults) {
         return [];
     }
     return Array.from(reportResults.querySelectorAll('.report-key.is-selected'));
-}
-
-function getOpenReportKeyCards() {
-    if (!reportResults) {
-        return [];
-    }
-    return Array.from(reportResults.querySelectorAll('.report-key.is-open'));
 }
 
 function getEventTargetElement(event) {
