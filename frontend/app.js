@@ -33,6 +33,7 @@ const reportDownload = document.getElementById('report-download');
 const reportCollapseNs = document.getElementById('report-collapse-ns');
 const reportCollapseApps = document.getElementById('report-collapse-apps');
 const reportCollapseErrors = document.getElementById('report-collapse-errors');
+const reportApplyAgentAll = document.getElementById('report-apply-agent-all');
 const reportSelectKeys = document.getElementById('report-select-keys');
 const reportClearSelection = document.getElementById('report-clear-selection');
 const reportPattern = document.getElementById('report-pattern');
@@ -180,6 +181,13 @@ document.addEventListener('DOMContentLoaded', () => {
     reportCollapseErrors.addEventListener('click', () => {
         collapseErrorApplications();
     });
+
+    if (reportApplyAgentAll) {
+        reportApplyAgentAll.addEventListener('click', (event) => {
+            const buttonEl = event.currentTarget;
+            applySpringConfigAgentToAllApps(buttonEl);
+        });
+    }
 
     if (reportSelectKeys) {
         reportSelectKeys.addEventListener('click', () => {
@@ -1032,7 +1040,7 @@ function buildReportCards(data, openApps) {
                 : '';
             const agentButton = canRetry
                 ? `
-                    <button type="button" class="btn-action btn-agent" onclick="applySpringConfigAgent('${namespace}', '${err.workloadName}', '${err.workloadKind || ''}', this)">
+                    <button type="button" class="btn-action btn-agent" data-agent-button="true" data-namespace="${escapeHtml(namespace)}" data-workload-name="${escapeHtml(err.workloadName)}" data-workload-kind="${escapeHtml(err.workloadKind || '')}" onclick="applySpringConfigAgent('${namespace}', '${err.workloadName}', '${err.workloadKind || ''}', this)">
                         Apply Spring Config Agent
                     </button>
                 `
@@ -1071,9 +1079,21 @@ function buildReportCards(data, openApps) {
             `;
         }).join('');
 
+        const skippedAgentButton = `
+            <button type="button" class="btn btn-secondary" onclick="event.stopPropagation(); applySpringConfigAgentToSkippedNamespace('${namespace}', this)">
+                Apply agent to skipped
+            </button>
+        `;
+
         html += `
             <details class="report-card" data-kind="error" data-error="true">
-                <summary>Skipped applications <span class="config-count">${errors.length}</span></summary>
+                <summary>
+                    <span>Skipped applications</span>
+                    <span class="report-card-summary-actions">
+                        <span class="config-count">${errors.length}</span>
+                        ${skippedAgentButton}
+                    </span>
+                </summary>
                 <div class="report-keys">${errorHtml}</div>
             </details>
         `;
@@ -1236,7 +1256,11 @@ function restoreReportResultsView() {
     if (reportResultsState.mode === 'single') {
         renderReportResultsView(reportResultsState.data);
     } else if (reportResultsState.mode === 'multi') {
-        renderMultiNamespaceResultsView(reportResultsState.reports || []);
+        const reports = reportResultsState.reports || [];
+        const filtered = reportViewState.namespace
+            ? reports.filter(report => report.namespace === reportViewState.namespace)
+            : reports;
+        renderMultiNamespaceResultsView(filtered);
     }
 }
 
@@ -3203,10 +3227,11 @@ async function exposeActuatorEnv(namespace, workloadName, workloadKind, buttonEl
 async function applySpringConfigAgent(namespace, workloadName, workloadKind, buttonEl) {
     if (!namespace || !workloadName) {
         setReportStatus('Missing namespace or workload name.', 'error');
-        return;
+        return false;
     }
 
     const kindLabel = workloadKind || 'workload';
+    let success = false;
     if (buttonEl) {
         buttonEl.disabled = true;
         buttonEl.classList.remove('is-success', 'is-error');
@@ -3268,6 +3293,7 @@ async function applySpringConfigAgent(namespace, workloadName, workloadKind, but
             buttonEl.textContent = 'Applied';
             buttonEl.classList.add('is-success');
         }
+        success = true;
     } catch (error) {
         console.error('Error applying Spring Config Agent:', error);
         const message = `Error: ${error.message}`;
@@ -3277,12 +3303,196 @@ async function applySpringConfigAgent(namespace, workloadName, workloadKind, but
             buttonEl.textContent = 'Apply Spring Config Agent';
             buttonEl.classList.add('is-error');
         }
-        return;
+        success = false;
     } finally {
         if (buttonEl) {
             buttonEl.disabled = false;
         }
     }
+    return success;
+}
+
+function getReportDataList(namespaceFilter) {
+    if (!reportResultsState) {
+        return [];
+    }
+
+    if (reportResultsState.mode === 'single') {
+        const data = reportResultsState.data || {};
+        const namespace = data.namespace || currentNamespace;
+        if (namespaceFilter && namespaceFilter !== namespace) {
+            return [];
+        }
+        return [{ namespace, data }];
+    }
+
+    if (reportResultsState.mode === 'multi') {
+        return (reportResultsState.reports || [])
+            .map(report => ({
+                namespace: report.namespace || '',
+                data: report.data || {},
+            }))
+            .filter(entry => entry.namespace && (!namespaceFilter || entry.namespace === namespaceFilter));
+    }
+
+    return [];
+}
+
+function collectReportTargets({ namespaceFilter, includeMatched, includeErrors }) {
+    const targets = [];
+    const seen = new Set();
+    const entries = getReportDataList(namespaceFilter);
+
+    entries.forEach(entry => {
+        const namespace = entry.namespace || '';
+        if (!namespace) {
+            return;
+        }
+
+        if (includeMatched) {
+            (entry.data.matched || []).forEach(item => {
+                const workloadName = item.workloadName || '';
+                if (!workloadName) {
+                    return;
+                }
+                const workloadKind = item.workloadKind || '';
+                const key = `${namespace}||${workloadName}||${workloadKind}`;
+                if (seen.has(key)) {
+                    return;
+                }
+                seen.add(key);
+                targets.push({ namespace, workloadName, workloadKind });
+            });
+        }
+
+        if (includeErrors) {
+            (entry.data.errors || []).forEach(err => {
+                if (!err || !err.workloadName || err.workloadKind === 'namespace') {
+                    return;
+                }
+                const workloadName = err.workloadName || '';
+                const workloadKind = err.workloadKind || '';
+                const key = `${namespace}||${workloadName}||${workloadKind}`;
+                if (seen.has(key)) {
+                    return;
+                }
+                seen.add(key);
+                targets.push({ namespace, workloadName, workloadKind });
+            });
+        }
+    });
+
+    return targets;
+}
+
+function resolveSkippedAgentButton(target) {
+    if (!reportResults || !target) {
+        return null;
+    }
+    const matchId = getSkippedMatchId(target.namespace, target.workloadName, target.workloadKind || '');
+    const keyCard = reportResults.querySelector(`.report-key[data-match-id="${matchId}"]`);
+    if (!keyCard) {
+        return null;
+    }
+    return keyCard.querySelector('.btn-agent');
+}
+
+async function applySpringConfigAgentBulk(targets, options = {}) {
+    const {
+        scopeLabel = 'applications',
+        confirmMessage,
+        buttonResolver,
+        triggerButton,
+    } = options;
+
+    if (!targets.length) {
+        setReportStatus(`No ${scopeLabel} found to apply Spring Config Agent.`, 'info');
+        return;
+    }
+
+    if (confirmMessage && !confirm(confirmMessage)) {
+        return;
+    }
+
+    const originalLabel = triggerButton ? triggerButton.textContent : '';
+    if (triggerButton) {
+        triggerButton.disabled = true;
+    }
+
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (let i = 0; i < targets.length; i += 1) {
+        const target = targets[i];
+        if (triggerButton) {
+            triggerButton.textContent = `Applying... ${i + 1}/${targets.length}`;
+        }
+        setReportStatus(`Applying Spring Config Agent (${i + 1}/${targets.length})...`, 'info');
+        const buttonEl = buttonResolver ? buttonResolver(target) : null;
+        const ok = await applySpringConfigAgent(
+            target.namespace,
+            target.workloadName,
+            target.workloadKind,
+            buttonEl,
+        );
+        if (ok) {
+            successCount += 1;
+        } else {
+            failureCount += 1;
+        }
+    }
+
+    if (failureCount) {
+        setReportStatus(
+            `Applied Spring Config Agent to ${successCount}/${targets.length} ${scopeLabel}. ${failureCount} failed.`,
+            'error',
+        );
+    } else {
+        setReportStatus(`Applied Spring Config Agent to ${successCount} ${scopeLabel}.`, 'success');
+    }
+
+    if (triggerButton) {
+        triggerButton.disabled = false;
+        triggerButton.textContent = originalLabel;
+    }
+}
+
+async function applySpringConfigAgentToSkippedNamespace(namespace, buttonEl) {
+    if (!reportResultsState) {
+        setReportStatus('Run a report before applying the Spring Config Agent.', 'error');
+        return;
+    }
+
+    const targets = collectReportTargets({
+        namespaceFilter: namespace,
+        includeMatched: false,
+        includeErrors: true,
+    });
+
+    await applySpringConfigAgentBulk(targets, {
+        scopeLabel: `skipped applications in ${namespace}`,
+        confirmMessage: `Apply Spring Config Agent to ${targets.length} skipped application(s) in "${namespace}"?`,
+        buttonResolver: resolveSkippedAgentButton,
+        triggerButton: buttonEl,
+    });
+}
+
+async function applySpringConfigAgentToAllApps(buttonEl) {
+    if (!reportResultsState) {
+        setReportStatus('Run a report before applying the Spring Config Agent.', 'error');
+        return;
+    }
+
+    const targets = collectReportTargets({
+        includeMatched: true,
+        includeErrors: false,
+    });
+
+    await applySpringConfigAgentBulk(targets, {
+        scopeLabel: 'spring applications',
+        confirmMessage: `Apply Spring Config Agent to ${targets.length} spring application(s) across all namespaces?`,
+        triggerButton: buttonEl,
+    });
 }
 
 async function retrySkippedApplication(namespace, workloadName, workloadKind, buttonEl) {
