@@ -156,8 +156,9 @@
                         <option value="by-source">By source</option>
                         <option value="effective">Effective only</option>
                         <option value="by-key">By key (precedence stack)</option>
-                        <option value="chain">Config chain (bootstrap ƒÅ' application ƒÅ' workload)</option>
+                        <option value="chain">Config chain (bootstrap > image application > config app > config workload)</option>
                     </select>
+                    <button id="config-agent-run" class="btn btn-secondary" type="button">Run Config Agent</button>
                     <div id="config-profiles" class="config-profiles"></div>
                 </div>
                 <div id="config-content" class="config-content"></div>

@@ -22,6 +22,7 @@ const configViewMode = document.getElementById('config-view-mode');
 const configProfiles = document.getElementById('config-profiles');
 const configContent = document.getElementById('config-content');
 const configClose = document.getElementById('config-close');
+const configAgentRun = document.getElementById('config-agent-run');
 const reportRun = document.getElementById('report-run');
 const reportSave = document.getElementById('report-save');
 const reportLoad = document.getElementById('report-load');
@@ -128,6 +129,12 @@ document.addEventListener('DOMContentLoaded', () => {
     configClose.addEventListener('click', () => {
         hideConfigPanel();
     });
+
+    if (configAgentRun) {
+        configAgentRun.addEventListener('click', () => {
+            runSpringConfigAgent();
+        });
+    }
 
     configSearch.addEventListener('input', () => {
         renderConfigSources();
@@ -769,7 +776,7 @@ function renderWorkloads() {
                 <button class="btn-action btn-scale-down" onclick="scaleWorkload('${workload.kind}', '${workload.namespace}', '${workload.name}', ${Math.max(0, workload.replicas - 1)})">
                     Scale -1
                 </button>
-                <button class="btn-action btn-config" onclick="viewSpringConfig('${workload.namespace}', '${workload.name}', '${workload.kindLabel}')">
+                <button class="btn-action btn-config" onclick="viewSpringConfig('${workload.namespace}', '${workload.name}', '${workload.kindLabel}', '${workload.kind}')">
                     View Spring Config
                 </button>
             </div>
@@ -806,6 +813,10 @@ function hideConfigPanel() {
     configSearch.value = '';
     configViewMode.value = 'by-source';
     configStatus.textContent = '';
+    if (configAgentRun) {
+        configAgentRun.disabled = false;
+        configAgentRun.textContent = 'Run Config Agent';
+    }
 }
 
 function setConfigStatus(message, type = 'info') {
@@ -2188,6 +2199,308 @@ function extractEnvDetails(payload) {
     return { propertySources: [], activeProfiles: [] };
 }
 
+function parsePropertiesContent(content) {
+    if (!content) return {};
+    const values = {};
+    const lines = content.split(/\r?\n/);
+    lines.forEach(rawLine => {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#') || line.startsWith('!')) {
+            return;
+        }
+        let idx = line.indexOf('=');
+        if (idx < 0) {
+            idx = line.indexOf(':');
+        }
+        if (idx < 0) {
+            return;
+        }
+        const key = line.slice(0, idx).trim();
+        const value = line.slice(idx + 1).trim();
+        if (key && value) {
+            values[key] = stripQuotes(value);
+        }
+    });
+    return values;
+}
+
+function parseYamlContent(content) {
+    if (!content) return {};
+    const values = {};
+    const path = [];
+    let indents = [];
+    const lines = content.split(/\r?\n/);
+
+    lines.forEach(rawLine => {
+        let line = rawLine;
+        const hashIndex = line.indexOf('#');
+        if (hashIndex >= 0) {
+            line = line.slice(0, hashIndex);
+        }
+        if (!line.trim()) {
+            return;
+        }
+        const indent = countLeadingSpaces(line);
+        const trimmed = line.trim();
+        if (trimmed.startsWith('-')) {
+            return;
+        }
+        const parts = trimmed.split(':', 2);
+        if (!parts.length) {
+            return;
+        }
+        const key = parts[0].trim();
+        const value = parts.length > 1 ? parts[1].trim() : '';
+
+        while (path.length && indents[path.length - 1] >= indent) {
+            path.pop();
+        }
+        if (!value) {
+            path.push(key);
+            if (indents.length < path.length) {
+                indents = indents.concat(Array(path.length - indents.length).fill(0));
+            }
+            indents[path.length - 1] = indent;
+            return;
+        }
+        const full = path.concat([key]).join('.');
+        values[full] = stripQuotes(value);
+    });
+
+    return values;
+}
+
+function countLeadingSpaces(value) {
+    let count = 0;
+    while (count < value.length && value.charAt(count) === ' ') {
+        count += 1;
+    }
+    return count;
+}
+
+function stripQuotes(value) {
+    const trimmed = value.trim();
+    if ((trimmed.startsWith('"') && trimmed.endsWith('"'))
+        || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+        return trimmed.slice(1, -1);
+    }
+    return trimmed;
+}
+
+function isBootstrapName(name) {
+    if (!name) return false;
+    const lower = name.toLowerCase();
+    return /(^|\/)bootstrap[^\/]*\.(yml|yaml|properties)$/.test(lower);
+}
+
+function isApplicationName(name) {
+    if (!name) return false;
+    const lower = name.toLowerCase();
+    return /(^|\/)application[^\/]*\.(yml|yaml|properties)$/.test(lower);
+}
+
+function parseConfigContent(name, content) {
+    if (!content) return {};
+    const lower = (name || '').toLowerCase();
+    const isYaml = lower.endsWith('.yml') || lower.endsWith('.yaml');
+    return isYaml ? parseYamlContent(content) : parsePropertiesContent(content);
+}
+
+function collectAgentConfigEntries(payload) {
+    const entries = [];
+    const classpath = payload?.classpathResources || {};
+    Object.entries(classpath).forEach(([name, items]) => {
+        if (!Array.isArray(items)) return;
+        items.forEach(item => {
+            const content = item?.content;
+            if (!content) return;
+            const type = isBootstrapName(name) ? 'bootstrap' : (isApplicationName(name) ? 'application' : null);
+            if (!type) return;
+            const values = parseConfigContent(name, content);
+            if (Object.keys(values).length === 0) return;
+            entries.push({ type, origin: 'classpath', values });
+        });
+    });
+
+    const files = payload?.files?.matches || [];
+    if (Array.isArray(files)) {
+        files.forEach(item => {
+            const path = item?.path || '';
+            const content = item?.content;
+            const type = isBootstrapName(path) ? 'bootstrap' : (isApplicationName(path) ? 'application' : null);
+            if (!type || !content) return;
+            const values = parseConfigContent(path, content);
+            if (Object.keys(values).length === 0) return;
+            entries.push({ type, origin: 'file', values });
+        });
+    }
+
+    const jarMatches = payload?.jarResources?.matches || [];
+    if (Array.isArray(jarMatches)) {
+        jarMatches.forEach(jar => {
+            const jarEntries = jar?.entries || [];
+            if (!Array.isArray(jarEntries)) return;
+            jarEntries.forEach(entry => {
+                const name = entry?.name || '';
+                const content = entry?.content;
+                const type = isBootstrapName(name) ? 'bootstrap' : (isApplicationName(name) ? 'application' : null);
+                if (!type || !content) return;
+                const values = parseConfigContent(name, content);
+                if (Object.keys(values).length === 0) return;
+                entries.push({ type, origin: 'jar', values });
+            });
+        });
+    }
+
+    return entries;
+}
+
+function classifyConfigServerSource(sourceName, appName) {
+    const lower = (sourceName || '').toLowerCase();
+    const appToken = (appName || '').toLowerCase();
+    if (appToken) {
+        if (lower.includes(`/${appToken}.`)
+            || lower.includes(`/${appToken}-`)
+            || lower.endsWith(`/${appToken}`)
+            || lower.endsWith(`${appToken}.yml`)
+            || lower.endsWith(`${appToken}.yaml`)
+            || lower.endsWith(`${appToken}.properties`)) {
+            return 'config-workload';
+        }
+    }
+    if (lower.includes('/application.')
+        || lower.includes('/application-')
+        || lower.endsWith('application.yml')
+        || lower.endsWith('application.yaml')
+        || lower.endsWith('application.properties')) {
+        return 'config-app';
+    }
+    return null;
+}
+
+function parseConfigServerPayload(payload) {
+    const configServer = payload?.configServer;
+    if (!configServer || !configServer.content) {
+        return { data: null, error: null };
+    }
+    if (typeof configServer.content === 'object') {
+        return { data: configServer.content, error: null };
+    }
+    if (typeof configServer.content !== 'string') {
+        return { data: null, error: 'Config server content is not JSON.' };
+    }
+    try {
+        const parsed = JSON.parse(configServer.content);
+        return { data: parsed, error: null };
+    } catch (error) {
+        return { data: null, error: 'Config server response is not valid JSON.' };
+    }
+}
+
+function orderConfigSourcesByPrecedence(sources) {
+    const weights = {
+        'config-workload': 3,
+        'config-app': 2,
+        'application': 1,
+        'bootstrap': 0,
+    };
+    return sources
+        .map((source, index) => ({ ...source, _order: index }))
+        .sort((a, b) => {
+            const weightA = weights[a.categoryKey] ?? -1;
+            const weightB = weights[b.categoryKey] ?? -1;
+            if (weightA !== weightB) {
+                return weightB - weightA;
+            }
+            return a._order - b._order;
+        })
+        .map(({ _order, ...rest }) => rest);
+}
+
+function buildAgentConfigSources(payload, workloadName) {
+    const warnings = [];
+    const entries = collectAgentConfigEntries(payload);
+    const precedence = { classpath: 0, jar: 1, file: 2 };
+    const bootstrapEntries = entries.filter(item => item.type === 'bootstrap')
+        .sort((a, b) => (precedence[a.origin] || 0) - (precedence[b.origin] || 0));
+    const applicationEntries = entries.filter(item => item.type === 'application')
+        .sort((a, b) => (precedence[a.origin] || 0) - (precedence[b.origin] || 0));
+
+    const mergeEntries = (items) => {
+        const merged = {};
+        items.forEach(item => {
+            Object.assign(merged, item.values || {});
+        });
+        return merged;
+    };
+
+    const bootstrapValues = mergeEntries(bootstrapEntries);
+    const applicationValues = mergeEntries(applicationEntries);
+
+    const configServer = parseConfigServerPayload(payload);
+    const configWorkloadSources = [];
+    const configAppSources = [];
+    let activeProfiles = [];
+    let appName = workloadName;
+
+    if (configServer.data) {
+        appName = configServer.data.name || appName;
+        if (Array.isArray(configServer.data.profiles)) {
+            activeProfiles = configServer.data.profiles;
+        }
+        const propertySources = Array.isArray(configServer.data.propertySources)
+            ? configServer.data.propertySources
+            : [];
+        propertySources.forEach(source => {
+            if (!source || typeof source !== 'object') return;
+            const name = String(source.name || '');
+            const props = source.source && typeof source.source === 'object' ? source.source : {};
+            if (!Object.keys(props).length) return;
+            const category = classifyConfigServerSource(name, appName);
+            if (category === 'config-workload') {
+                configWorkloadSources.push({
+                    name,
+                    properties: props,
+                    categoryKey: 'config-workload',
+                    categoryLabel: `config ${appName || 'application'}.yml`,
+                });
+            } else if (category === 'config-app') {
+                configAppSources.push({
+                    name,
+                    properties: props,
+                    categoryKey: 'config-app',
+                    categoryLabel: 'config application.yml',
+                });
+            }
+        });
+    } else if (configServer.error) {
+        warnings.push(configServer.error);
+    }
+
+    const propertySources = [];
+    propertySources.push(...configWorkloadSources);
+    propertySources.push(...configAppSources);
+    if (Object.keys(applicationValues).length) {
+        propertySources.push({
+            name: 'image application.yml',
+            properties: applicationValues,
+            categoryKey: 'application',
+            categoryLabel: 'image application.yml',
+        });
+    }
+    if (Object.keys(bootstrapValues).length) {
+        propertySources.push({
+            name: 'bootstrap.yml',
+            properties: bootstrapValues,
+            categoryKey: 'bootstrap',
+            categoryLabel: 'bootstrap.yml',
+        });
+    }
+
+    const orderedSources = orderConfigSourcesByPrecedence(propertySources);
+    return { propertySources: orderedSources, activeProfiles, warnings };
+}
+
 function formatValue(value) {
     if (value === null || value === undefined) return '';
     if (typeof value === 'string') return value;
@@ -2202,7 +2515,13 @@ function normalizePropertyValue(value) {
     return value && typeof value === 'object' && 'value' in value ? value.value : value;
 }
 
-function getSourceCategory(sourceName, workloadName) {
+function getSourceCategory(sourceName, workloadName, source) {
+    if (source && source.categoryKey) {
+        return {
+            key: source.categoryKey,
+            label: source.categoryLabel || sourceName || 'Config source',
+        };
+    }
     if (!sourceName) return { key: 'other', label: 'Other source' };
 
     if (sourceName.includes('classpath:/bootstrap.yml')) {
@@ -2215,6 +2534,10 @@ function getSourceCategory(sourceName, workloadName) {
 
     if (workloadName && sourceName.startsWith('bootstrapProperties-') && sourceName.includes(`/${workloadName}.yml`)) {
         return { key: 'config-workload', label: `config ${workloadName}.yml` };
+    }
+
+    if (sourceName.includes('applicationConfig: [classpath:/application')) {
+        return { key: 'application', label: 'image application.yml' };
     }
 
     return { key: 'other', label: 'Other source' };
@@ -2436,17 +2759,21 @@ function renderConfigByKey(searchTerm) {
 function renderConfigChain(searchTerm) {
     const sources = configState.propertySources || [];
     const workloadName = configState.workloadName;
-    const chainOrder = ['bootstrap', 'config-app', 'config-workload'];
+    const chainOrder = ['bootstrap', 'application', 'config-app', 'config-workload'];
     const sections = chainOrder.map(chainKey => {
         const matchingSources = sources
             .map((source, index) => ({ source, index }))
-            .filter(item => getSourceCategory(item.source.name || '', workloadName).key === chainKey);
+            .filter(item => getSourceCategory(item.source.name || '', workloadName, item.source).key === chainKey);
 
         if (matchingSources.length === 0) {
             return '';
         }
 
-        const label = getSourceCategory(matchingSources[0].source.name || '', workloadName).label;
+        const label = getSourceCategory(
+            matchingSources[0].source.name || '',
+            workloadName,
+            matchingSources[0].source,
+        ).label;
         const sourceBlocks = matchingSources.map(({ source, index }) => {
             const properties = source.properties || {};
             const entries = Object.entries(properties)
@@ -2506,13 +2833,17 @@ function renderConfigChain(searchTerm) {
     configContent.innerHTML = sections || '<div class="config-empty">No matching properties in the config chain.</div>';
 }
 
-async function viewSpringConfig(namespace, workloadName, kindLabel) {
+async function viewSpringConfig(namespace, workloadName, kindLabel, workloadKind) {
     showConfigPanel();
     configTitle.textContent = `Spring Config Explorer`;
     configMeta.textContent = `Loading ${workloadName} (${kindLabel}) in ${namespace}...`;
     setConfigStatus('Fetching config from running pod...', 'info');
     configContent.innerHTML = '';
     configProfiles.innerHTML = '';
+    if (configAgentRun) {
+        configAgentRun.disabled = true;
+        configAgentRun.textContent = 'Run Config Agent';
+    }
 
     try {
         const response = await fetch(`${API_BASE_URL}/config/${namespace}/${workloadName}`);
@@ -2530,7 +2861,10 @@ async function viewSpringConfig(namespace, workloadName, kindLabel) {
             propertySources,
             activeProfiles,
             workloadName: data.workloadName,
+            namespace: data.namespace || namespace,
+            workloadKind: workloadKind || data.workloadKind,
             effectiveIndex: buildEffectiveIndex(propertySources),
+            sourceType: 'actuator',
         };
 
         configTitle.textContent = `Spring Config Explorer`;
@@ -2543,10 +2877,87 @@ async function viewSpringConfig(namespace, workloadName, kindLabel) {
 
         renderProfiles(activeProfiles);
         renderConfigSources();
+        if (configAgentRun) {
+            configAgentRun.disabled = false;
+        }
     } catch (error) {
         console.error('Error loading spring config:', error);
         setConfigStatus(`Error: ${error.message}`, 'error');
         configContent.innerHTML = '';
+        if (configAgentRun) {
+            configAgentRun.disabled = false;
+        }
+    }
+}
+
+async function runSpringConfigAgent() {
+    if (!configState || !configState.namespace || !configState.workloadName) {
+        setConfigStatus('Open a workload before running the config agent.', 'error');
+        return;
+    }
+    const namespace = configState.namespace;
+    const workloadName = configState.workloadName;
+    const workloadKind = configState.workloadKind;
+
+    if (!confirm(`Run Spring Config Agent for ${workloadName} in ${namespace}?`)) {
+        return;
+    }
+
+    if (configAgentRun) {
+        configAgentRun.disabled = true;
+        configAgentRun.textContent = 'Running...';
+    }
+
+    setConfigStatus('Running Spring Config Agent (highest-precedence wins)...', 'info');
+    configContent.innerHTML = '';
+    configProfiles.innerHTML = '';
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/config/${namespace}/${workloadName}/apply-spring-config-agent`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ workloadKind }),
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            const message = errorData.detail?.message || errorData.detail || 'Failed to run Spring Config Agent';
+            throw new Error(message);
+        }
+
+        const data = await response.json();
+        const payload = data.payload || data;
+        const { propertySources, activeProfiles, warnings } = buildAgentConfigSources(payload, workloadName);
+
+        configState = {
+            ...configState,
+            propertySources,
+            activeProfiles,
+            effectiveIndex: buildEffectiveIndex(propertySources),
+            sourceType: 'agent',
+        };
+
+        configViewMode.value = 'effective';
+        renderProfiles(activeProfiles);
+        renderConfigSources();
+
+        if (!propertySources.length) {
+            setConfigStatus('Spring Config Agent returned no config sources.', 'error');
+        } else if (warnings.length) {
+            setConfigStatus(`Loaded agent config with warnings: ${warnings.join(' ')}`, 'error');
+        } else {
+            setConfigStatus('Loaded Spring Config Agent config chain (effective values first).', 'success');
+        }
+    } catch (error) {
+        console.error('Error running spring config agent:', error);
+        setConfigStatus(`Error: ${error.message}`, 'error');
+    } finally {
+        if (configAgentRun) {
+            configAgentRun.disabled = false;
+            configAgentRun.textContent = 'Run Config Agent';
+        }
     }
 }
 
