@@ -903,7 +903,7 @@ async function fetchWithRetry(url, options = {}, retryOptions = {}) {
     return fetch(url, options);
 }
 
-function buildReportCards(data) {
+function buildReportCards(data, openApps) {
     const matches = data.matched || [];
     const errors = data.errors || [];
     const highlightPattern = reportPattern.value.trim();
@@ -963,8 +963,10 @@ function buildReportCards(data) {
                 `;
             }).join('');
 
+            const shouldOpen = !openApps || openApps.has(item.workloadName);
+            const openAttr = shouldOpen ? 'open' : '';
             return `
-                <details class="report-card" data-kind="app" open>
+                <details class="report-card" data-kind="app" data-app="${escapeHtml(item.workloadName)}" ${openAttr}>
                     <summary>
                         <span class="report-summary">
                             ${escapeHtml(item.workloadName)}
@@ -1058,9 +1060,31 @@ function buildReportCards(data) {
 }
 
 function renderReportResultsView(data) {
+    const openApps = getOpenAppCards();
+    const hasExisting = Boolean(reportResults.querySelector('.report-card[data-kind="app"]'));
     preserveReportScroll(() => {
-        reportResults.innerHTML = buildReportCards(data);
+        reportResults.innerHTML = buildReportCards(data, hasExisting ? openApps : null);
     });
+}
+
+function getOpenAppCards() {
+    if (!reportResults) {
+        return new Set();
+    }
+    return new Set(Array.from(reportResults.querySelectorAll('.report-card[data-kind="app"]'))
+        .filter(detail => detail.open)
+        .map(detail => detail.dataset.app)
+        .filter(Boolean));
+}
+
+function getOpenReportNamespaces() {
+    if (!reportResults) {
+        return new Set();
+    }
+    return new Set(Array.from(reportResults.querySelectorAll('.report-namespace'))
+        .filter(detail => detail.open)
+        .map(detail => detail.dataset.namespace)
+        .filter(Boolean));
 }
 
 function renderMultiNamespaceResultsView(reports) {
@@ -1069,14 +1093,37 @@ function renderMultiNamespaceResultsView(reports) {
         return;
     }
 
+    const openNamespaces = getOpenReportNamespaces();
+    const hasExisting = Boolean(reportResults.querySelector('.report-namespace'));
+    const openAppsByNamespace = getOpenAppCardsByNamespace();
+
     preserveReportScroll(() => {
         reportResults.innerHTML = reports.map(report => `
-            <details class="report-namespace" data-namespace="${escapeHtml(report.namespace)}" open>
+            <details class="report-namespace" data-namespace="${escapeHtml(report.namespace)}" ${!hasExisting || openNamespaces.has(report.namespace) ? 'open' : ''}>
                 <summary class="report-namespace-title">${escapeHtml(report.namespace)}</summary>
-                <div class="report-namespace-body">${buildReportCards(report.data)}</div>
+                <div class="report-namespace-body">${buildReportCards(report.data, openAppsByNamespace.has(report.namespace) ? openAppsByNamespace.get(report.namespace) : null)}</div>
             </details>
         `).join('');
     });
+}
+
+function getOpenAppCardsByNamespace() {
+    const results = new Map();
+    if (!reportResults) {
+        return results;
+    }
+    const namespaceDetails = reportResults.querySelectorAll('.report-namespace');
+    namespaceDetails.forEach(detail => {
+        const namespace = detail.dataset.namespace || '';
+        const openApps = new Set(Array.from(detail.querySelectorAll('.report-card[data-kind="app"]'))
+            .filter(card => card.open)
+            .map(card => card.dataset.app)
+            .filter(Boolean));
+        if (namespace) {
+            results.set(namespace, openApps);
+        }
+    });
+    return results;
 }
 
 function renderReportResults(data) {
