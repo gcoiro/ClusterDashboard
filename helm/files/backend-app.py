@@ -427,14 +427,21 @@ def select_target_pod(pods):
 
 
 def wait_for_pod_running(namespace: str, pod_name: str, timeout_seconds=60):
-    start = time.time()
-    while time.time() - start < timeout_seconds:
-        pod = run_oc(["get", "pod", pod_name, "-n", namespace, "-o", "json"], expect_json=True)
-        phase = pod.get("status", {}).get("phase")
-        if phase == "Running":
-            return pod
-        time.sleep(2)
-    raise HTTPException(status_code=504, detail=f"Timed out waiting for debug pod {pod_name} to be running")
+    timeout_arg = f"{max(1, int(timeout_seconds))}s"
+    try:
+        run_oc([
+            "wait",
+            "--for=condition=Ready",
+            f"pod/{pod_name}",
+            "-n",
+            namespace,
+            f"--timeout={timeout_arg}",
+        ])
+    except HTTPException as exc:
+        detail = getattr(exc, "detail", "")
+        message = detail if isinstance(detail, str) else "Timed out waiting for debug pod readiness"
+        raise HTTPException(status_code=504, detail=message)
+    return run_oc(["get", "pod", pod_name, "-n", namespace, "-o", "json"], expect_json=True)
 
 
 def build_debug_pod_manifest(namespace: str, source_pod_name: str, debug_pod_name: str, image: str) -> dict:
