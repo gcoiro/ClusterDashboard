@@ -2953,10 +2953,6 @@ async function runSpringConfigAgent() {
     const workloadName = configState.workloadName;
     const workloadKind = configState.workloadKind;
 
-    if (!confirm(`Run Spring Config Agent for ${workloadName} in ${namespace}?`)) {
-        return;
-    }
-
     if (configAgentRun) {
         configAgentRun.disabled = true;
         configAgentRun.textContent = 'Running...';
@@ -3116,10 +3112,6 @@ async function applySpringConfigAgent(namespace, workloadName, workloadKind, but
     }
 
     const kindLabel = workloadKind || 'workload';
-    if (!confirm(`Apply the Spring Config Agent for ${workloadName} (${kindLabel}) in ${namespace}?`)) {
-        return;
-    }
-
     if (buttonEl) {
         buttonEl.disabled = true;
         buttonEl.classList.remove('is-success', 'is-error');
