@@ -25,3 +25,8 @@ Arguments:
 - `maxJars`: max jars inspected during jar scan (default 20)
 - `maxDepth`: max directory depth when scanning files/jars (default 6)
 - `searchPaths`: extra semicolon/comma-separated paths to scan
+
+Notes:
+- Profile filtering uses `SPRING_PROFILES_ACTIVE` / `SPRING_CLOUD_CONFIG_PROFILE` or `default`.
+- Config server auth supports Basic and will try to decrypt `{cipher}` / `ENC(...)` values
+  using `encrypt.key` from config files or `ENCRYPT_KEY` env.

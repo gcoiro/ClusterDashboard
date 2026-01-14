@@ -25,6 +25,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.TreeMap;
+import org.springframework.security.crypto.encrypt.Encryptors;
+import org.springframework.security.crypto.encrypt.TextEncryptor;
 
 public class SpringConfigAgent {
     private static final int DEFAULT_MAX_CHARS = 200_000;
@@ -383,7 +385,8 @@ public class SpringConfigAgent {
         Map<String, Object> jarResources
     ) {
         Map<String, Object> data = new LinkedHashMap<>();
-        ConfigHints hints = buildConfigHints(classpathResources, fileResources, jarResources);
+        List<String> activeProfiles = resolveActiveProfiles();
+        ConfigHints hints = buildConfigHints(classpathResources, fileResources, jarResources, activeProfiles);
         String configServerUrl = resolveConfigServerUrl(hints);
         if (configServerUrl == null || configServerUrl.isEmpty()) {
             return data;
@@ -416,20 +419,27 @@ public class SpringConfigAgent {
             java.net.HttpURLConnection connection = (java.net.HttpURLConnection) url.openConnection();
             connection.setConnectTimeout(5000);
             connection.setReadTimeout(5000);
-            String username = firstNonEmpty(
-                System.getenv("SPRING_CLOUD_CONFIG_USERNAME"),
-                hints.username
+        String username = firstNonEmpty(
+            System.getenv("SPRING_CLOUD_CONFIG_USERNAME"),
+            hints.username
+        );
+        String password = firstNonEmpty(
+            System.getenv("SPRING_CLOUD_CONFIG_PASSWORD"),
+            hints.password
+        );
+        String encryptKey = firstNonEmpty(
+            System.getenv("ENCRYPT_KEY"),
+            hints.encryptKey
+        );
+        if (password != null) {
+            password = decryptIfPossible(password, encryptKey);
+        }
+        if (username != null && !username.isEmpty() && password != null) {
+            String token = java.util.Base64.getEncoder().encodeToString(
+                (username + ":" + password).getBytes(StandardCharsets.UTF_8)
             );
-            String password = firstNonEmpty(
-                System.getenv("SPRING_CLOUD_CONFIG_PASSWORD"),
-                hints.password
-            );
-            if (username != null && !username.isEmpty() && password != null) {
-                String token = java.util.Base64.getEncoder().encodeToString(
-                    (username + ":" + password).getBytes(StandardCharsets.UTF_8)
-                );
-                connection.setRequestProperty("Authorization", "Basic " + token);
-            }
+            connection.setRequestProperty("Authorization", "Basic " + token);
+        }
             int status = connection.getResponseCode();
             data.put("status", status);
             InputStream stream = status >= 200 && status < 300
@@ -604,7 +614,8 @@ public class SpringConfigAgent {
     private static ConfigHints buildConfigHints(
         Map<String, Object> classpathResources,
         Map<String, Object> fileResources,
-        Map<String, Object> jarResources
+        Map<String, Object> jarResources,
+        List<String> activeProfiles
     ) {
         List<ConfigCandidate> candidates = new ArrayList<>();
         candidates.addAll(extractCandidatesFromClasspath(classpathResources));
@@ -615,6 +626,9 @@ public class SpringConfigAgent {
         candidates.sort((a, b) -> Integer.compare(a.priority, b.priority));
         for (ConfigCandidate candidate : candidates) {
             Map<String, String> values = parseConfigValues(candidate.content, candidate.isYaml);
+            if (!isCandidateApplicable(candidate, values, activeProfiles)) {
+                continue;
+            }
             if (hints.configImport == null) {
                 hints.configImport = values.get("spring.config.import");
             }
@@ -626,6 +640,9 @@ public class SpringConfigAgent {
             }
             if (hints.password == null) {
                 hints.password = values.get("spring.cloud.config.password");
+            }
+            if (hints.encryptKey == null) {
+                hints.encryptKey = values.get("encrypt.key");
             }
             if (hints.applicationName == null) {
                 hints.applicationName = values.get("spring.application.name");
@@ -722,8 +739,10 @@ public class SpringConfigAgent {
     private static ConfigCandidate buildCandidate(String name, String content, String source) {
         String lower = name.toLowerCase(Locale.ROOT);
         boolean isYaml = lower.endsWith(".yml") || lower.endsWith(".yaml");
-        int priority = lower.contains("bootstrap") ? 0 : 1;
-        return new ConfigCandidate(priority, content, isYaml, source);
+        String profileTag = extractProfileFromFilename(lower);
+        int basePriority = lower.contains("bootstrap") ? 0 : 2;
+        int priority = profileTag == null ? basePriority : basePriority + 1;
+        return new ConfigCandidate(priority, content, isYaml, source, profileTag);
     }
 
     private static Map<String, String> parseConfigValues(String content, boolean isYaml) {
@@ -806,6 +825,104 @@ public class SpringConfigAgent {
         return values;
     }
 
+    private static List<String> resolveActiveProfiles() {
+        String active = firstNonEmpty(
+            System.getenv("SPRING_PROFILES_ACTIVE"),
+            System.getenv("SPRING_CLOUD_CONFIG_PROFILE")
+        );
+        if (active == null || active.trim().isEmpty()) {
+            return Collections.singletonList("default");
+        }
+        String[] tokens = active.split("[,;]");
+        List<String> profiles = new ArrayList<>();
+        for (String token : tokens) {
+            String trimmed = token.trim();
+            if (!trimmed.isEmpty()) {
+                profiles.add(trimmed);
+            }
+        }
+        return profiles.isEmpty() ? Collections.singletonList("default") : profiles;
+    }
+
+    private static boolean isCandidateApplicable(
+        ConfigCandidate candidate,
+        Map<String, String> values,
+        List<String> activeProfiles
+    ) {
+        if (candidate.profileTag != null && !activeProfiles.contains(candidate.profileTag)) {
+            return false;
+        }
+        String docProfiles = firstNonEmpty(
+            values.get("spring.profiles"),
+            values.get("spring.config.activate.on-profile")
+        );
+        if (docProfiles == null || docProfiles.trim().isEmpty()) {
+            return true;
+        }
+        for (String token : docProfiles.split("[,;]")) {
+            String trimmed = token.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            if (activeProfiles.contains(trimmed)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String extractProfileFromFilename(String name) {
+        int dashIndex = name.indexOf("application-");
+        if (dashIndex >= 0) {
+            String remainder = name.substring(dashIndex + "application-".length());
+            int dotIndex = remainder.indexOf('.');
+            if (dotIndex > 0) {
+                return remainder.substring(0, dotIndex);
+            }
+        }
+        dashIndex = name.indexOf("bootstrap-");
+        if (dashIndex >= 0) {
+            String remainder = name.substring(dashIndex + "bootstrap-".length());
+            int dotIndex = remainder.indexOf('.');
+            if (dotIndex > 0) {
+                return remainder.substring(0, dotIndex);
+            }
+        }
+        return null;
+    }
+
+    private static String decryptIfPossible(String value, String encryptKey) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.startsWith("{cipher}")) {
+            String cipherText = trimmed.substring("{cipher}".length());
+            if (encryptKey == null || encryptKey.isEmpty()) {
+                return trimmed;
+            }
+            try {
+                TextEncryptor encryptor = Encryptors.text(encryptKey, "deadbeef");
+                return encryptor.decrypt(cipherText);
+            } catch (Exception exc) {
+                return trimmed;
+            }
+        }
+        if (trimmed.startsWith("ENC(") && trimmed.endsWith(")")) {
+            String cipherText = trimmed.substring(4, trimmed.length() - 1);
+            if (encryptKey == null || encryptKey.isEmpty()) {
+                return trimmed;
+            }
+            try {
+                TextEncryptor encryptor = Encryptors.text(encryptKey, "deadbeef");
+                return encryptor.decrypt(cipherText);
+            } catch (Exception exc) {
+                return trimmed;
+            }
+        }
+        return trimmed;
+    }
+
     private static int countLeadingSpaces(String value) {
         int count = 0;
         while (count < value.length() && value.charAt(count) == ' ') {
@@ -828,12 +945,14 @@ public class SpringConfigAgent {
         private final String content;
         private final boolean isYaml;
         private final String source;
+        private final String profileTag;
 
-        private ConfigCandidate(int priority, String content, boolean isYaml, String source) {
+        private ConfigCandidate(int priority, String content, boolean isYaml, String source, String profileTag) {
             this.priority = priority;
             this.content = content;
             this.isYaml = isYaml;
             this.source = source;
+            this.profileTag = profileTag;
         }
     }
 
@@ -842,6 +961,7 @@ public class SpringConfigAgent {
         private String configUri;
         private String username;
         private String password;
+        private String encryptKey;
         private String applicationName;
         private String profile;
         private String source;

@@ -1490,7 +1490,7 @@ async def apply_spring_config_agent(
                     redis_client.setex(cache_key, CACHE_TTL_SECONDS, cache_payload.encode("utf-8"))
                     logger.debug("Spring config agent cache write (redis) %s", cache_key)
                 else:
-                    _actuator_cache[cache_key] = (time.time() + CACHE_TTL_SECONDS, cache_payload)
+                    _actuator_cache[cache_key] = (time.time() + CACHE_TTL_SECONDS, cache_payl oad)
                     logger.debug("Spring config agent cache write (memory) %s", cache_key)
             except Exception as exc:
                 logger.warning("Spring config agent cache write failed: %s", str(exc))
