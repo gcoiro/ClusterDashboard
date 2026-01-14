@@ -2501,6 +2501,51 @@ function buildAgentConfigSources(payload, workloadName) {
     return { propertySources: orderedSources, activeProfiles, warnings };
 }
 
+function buildAgentReportMatches(payload, workloadName, workloadKind, pattern, caseInsensitive) {
+    if (!pattern) {
+        return { matchedItem: null, error: 'Enter a regex pattern to search.' };
+    }
+    let regex;
+    try {
+        regex = new RegExp(pattern, caseInsensitive ? 'i' : '');
+    } catch (error) {
+        return { matchedItem: null, error: `Invalid regex pattern: ${error.message}` };
+    }
+
+    const { propertySources } = buildAgentConfigSources(payload, workloadName);
+    if (!propertySources.length) {
+        return { matchedItem: null, error: 'Spring Config Agent returned no config sources.' };
+    }
+
+    const effectiveIndex = buildEffectiveIndex(propertySources);
+    const matches = Object.keys(effectiveIndex.valueByKey).map(key => {
+        const valueText = formatValue(effectiveIndex.valueByKey[key]);
+        if (!regex.test(valueText)) {
+            return null;
+        }
+        return {
+            key,
+            value: valueText,
+            source: effectiveIndex.sourceNameByKey[key],
+            matchOn: 'value',
+        };
+    }).filter(Boolean);
+
+    if (!matches.length) {
+        return { matchedItem: null, error: null };
+    }
+
+    matches.sort((a, b) => a.key.localeCompare(b.key));
+    return {
+        matchedItem: {
+            workloadName,
+            workloadKind: workloadKind || 'workload',
+            matches,
+        },
+        error: null,
+    };
+}
+
 function formatValue(value) {
     if (value === null || value === undefined) return '';
     if (typeof value === 'string') return value;
@@ -3096,6 +3141,33 @@ async function applySpringConfigAgent(namespace, workloadName, workloadKind, but
         const message = result.message || 'Spring Config Agent applied.';
         setReportStatus(message, 'success');
         setInlineStatus(statusEl, message, 'success');
+
+        const payload = result.payload || result;
+        const pattern = reportPattern.value.trim();
+        const caseInsensitive = reportCase.checked;
+        const { matchedItem, error } = buildAgentReportMatches(
+            payload,
+            workloadName,
+            workloadKind,
+            pattern,
+            caseInsensitive,
+        );
+        if (error) {
+            setInlineStatus(statusEl, error, 'error');
+            setReportStatus(error, 'error');
+        } else if (matchedItem && reportResultsState) {
+            applyWorkloadReportUpdate(namespace, workloadName, {
+                matched: [matchedItem],
+                errors: [],
+            });
+            setInlineStatus(statusEl, `Report matched ${matchedItem.matches.length} key(s).`, 'success');
+            setReportStatus(`Report matched ${matchedItem.matches.length} key(s) for ${workloadName}.`, 'success');
+        } else if (!matchedItem) {
+            applyWorkloadReportUpdate(namespace, workloadName, { matched: [], errors: [] });
+            setInlineStatus(statusEl, 'No matching keys for the current pattern.', 'info');
+            setReportStatus(`No matching keys for ${workloadName}.`, 'info');
+        }
+
         if (buttonEl) {
             buttonEl.textContent = 'Applied';
             buttonEl.classList.add('is-success');
