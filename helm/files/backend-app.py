@@ -1482,7 +1482,7 @@ async def apply_spring_config_agent(
                 output_payload = f.read()
         if CACHE_TTL_SECONDS > 0:
             try:
-                 cache_payload = output_payload
+                cache_payload = output_payload
                 if not isinstance(cache_payload, str):
                     cache_payload = json.dumps(cache_payload)
                 redis_client = get_redis_client()
