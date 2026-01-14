@@ -1295,6 +1295,43 @@ async def apply_spring_config_agent(
         "Spring config agent request payload workloadKind=%s",
         request.workloadKind if request else None,
     )
+    cache_key = f"spring-config-agent:{namespace}:{workloadName}"
+    if CACHE_TTL_SECONDS > 0:
+        try:
+            redis_client = get_redis_client()
+            cached_payload = None
+            cache_source = None
+            if redis_client is not None:
+                cached_payload = redis_client.get(cache_key)
+                cache_source = "redis" if cached_payload else None
+                if cached_payload:
+                    cached_payload = cached_payload.decode("utf-8")
+            else:
+                cached = _actuator_cache.get(cache_key)
+                if cached:
+                    expires_at, payload = cached
+                    if time.time() < expires_at:
+                        cached_payload = payload
+                        cache_source = "memory"
+                    else:
+                        _actuator_cache.pop(cache_key, None)
+            if cached_payload:
+                try:
+                    parsed_payload = json.loads(cached_payload)
+                except json.JSONDecodeError:
+                    parsed_payload = cached_payload
+                logger.info("Spring config agent cache hit (%s) %s", cache_source, cache_key)
+                return {
+                    "success": True,
+                    "message": "Spring config agent cache hit.",
+                    "namespace": namespace,
+                    "workloadName": workloadName,
+                    "workloadKind": normalize_workload_kind(request.workloadKind if request else None),
+                    "cacheKey": cache_key,
+                    "payload": parsed_payload,
+                }
+        except Exception as exc:
+            logger.warning("Spring config agent cache read failed: %s", str(exc))
     if not SPRING_CONFIG_AGENT_ENABLED:
         logger.warning(
             "Spring config agent disabled; set SPRING_CONFIG_AGENT_ENABLED=true and mount jar at %s",
@@ -1443,10 +1480,9 @@ async def apply_spring_config_agent(
             logger.warning("Failed to parse agent output as JSON: %s", str(exc))
             with open(output_file, "r") as f:
                 output_payload = f.read()
-        cache_key = f"spring-config-agent:{namespace}:{workloadName}"
-        if CACHE_TTL_SECONDS > 0:
-            try:
-                cache_payload = output_payload
+    if CACHE_TTL_SECONDS > 0:
+        try:
+            cache_payload = output_payload
                 if not isinstance(cache_payload, str):
                     cache_payload = json.dumps(cache_payload)
                 redis_client = get_redis_client()
