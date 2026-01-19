@@ -184,6 +184,16 @@ def run_oc_with_timeout(args, timeout_seconds=30, expect_json=False):
     return result.stdout
 
 
+def run_oc_capture(args, timeout_seconds=30):
+    logger.debug("oc %s", " ".join(args))
+    return subprocess.run(
+        oc_base_args() + args,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+    )
+
+
 def run_oc_allow_timeout(args, timeout_seconds=15):
     logger.debug("oc %s", " ".join(args))
     try:
@@ -202,6 +212,14 @@ def run_oc_allow_timeout(args, timeout_seconds=15):
         status = 403 if "forbidden" in detail.lower() else 500
         raise HTTPException(status_code=status, detail=f"oc error: {detail}")
     return result.stdout
+
+
+def truncate_log(text: str, limit: int = 8000) -> str:
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...[truncated]"
 
 
 def run_oc_raw(path: str, expect_json=False):
@@ -832,6 +850,7 @@ class ExposeActuatorRequest(BaseModel):
 
 class ApplySpringConfigAgentRequest(BaseModel):
     workloadKind: Optional[str] = None
+    includeLogs: Optional[bool] = False
 
 
 @app.patch("/api/deployments/{namespace}/{name}/scale")
@@ -1362,6 +1381,7 @@ async def apply_spring_config_agent(
         workloadName,
         request.workloadKind if request else None,
     )
+    include_logs = bool(request.includeLogs) if request else False
     if not os.path.exists(SPRING_CONFIG_AGENT_JAR_PATH):
         logger.error("Spring config agent jar missing at %s", SPRING_CONFIG_AGENT_JAR_PATH)
         raise_structured_error(
@@ -1460,7 +1480,7 @@ async def apply_spring_config_agent(
         run_oc(["cp", SPRING_CONFIG_AGENT_JAR_PATH, f"{namespace}/{debug_pod_name}:{debug_jar_path}"])
 
         logger.info("Executing spring config agent in debug pod %s", debug_pod_name)
-        run_oc([
+        exec_args = [
             "exec",
             "-n",
             namespace,
@@ -1470,7 +1490,34 @@ async def apply_spring_config_agent(
             "-jar",
             debug_jar_path,
             f"output={debug_output_path}",
-        ])
+        ]
+        if include_logs:
+            exec_args.append("logLevel=DEBUG")
+        agent_stdout = ""
+        agent_stderr = ""
+        if include_logs:
+            exec_result = run_oc_capture(exec_args, timeout_seconds=60)
+            agent_stdout = truncate_log((exec_result.stdout or "").strip())
+            agent_stderr = truncate_log((exec_result.stderr or "").strip())
+            if exec_result.returncode != 0:
+                logger.error(
+                    "Spring config agent exec failed (code=%s) stdout=%s stderr=%s",
+                    exec_result.returncode,
+                    agent_stdout,
+                    agent_stderr,
+                )
+                raise_structured_error(
+                    500,
+                    "agent_exec_failed",
+                    "Spring config agent failed to execute.",
+                    {
+                        "exitCode": exec_result.returncode,
+                        "stdout": agent_stdout,
+                        "stderr": agent_stderr,
+                    },
+                )
+        else:
+            run_oc(exec_args)
 
         os.makedirs(SPRING_CONFIG_AGENT_OUTPUT_DIR, exist_ok=True)
         safe_workload = re.sub(r"[^a-zA-Z0-9_.-]+", "_", workloadName)
@@ -1518,6 +1565,7 @@ async def apply_spring_config_agent(
         "outputFile": output_file,
         "cacheKey": cache_key,
         "payload": output_payload,
+        "agentLogs": {"stdout": agent_stdout, "stderr": agent_stderr} if include_logs else None,
     }
 
 

@@ -62,6 +62,7 @@ public class SpringConfigAgent {
         "/usr/app/config",
         "/config"
     );
+    private static int logLevel = 2;
 
     public static void premain(String agentArgs, Instrumentation instrumentation) {
         runAgent(agentArgs);
@@ -78,6 +79,12 @@ public class SpringConfigAgent {
 
     private static void runAgent(String agentArgs) {
         Map<String, String> argsMap = parseArgs(agentArgs);
+        String logLevelArg = firstNonEmpty(
+            argsMap.get("logLevel"),
+            System.getenv("SPRING_CONFIG_AGENT_LOG_LEVEL")
+        );
+        setLogLevel(logLevelArg);
+        logInfo("Starting SpringConfigAgent args=%s", agentArgs == null ? "" : agentArgs);
         int maxChars = DEFAULT_MAX_CHARS;
         if (argsMap.containsKey("maxChars")) {
             try {
@@ -104,6 +111,7 @@ public class SpringConfigAgent {
 
         String json = toJson(payload);
         String outputPath = argsMap.get("output");
+        logInfo("Writing output to %s", outputPath == null ? "(stdout)" : outputPath);
         writeOutput(outputPath, json);
     }
 
@@ -389,6 +397,7 @@ public class SpringConfigAgent {
         ConfigHints hints = buildConfigHints(classpathResources, fileResources, jarResources, activeProfiles);
         String configServerUrl = resolveConfigServerUrl(hints);
         if (configServerUrl == null || configServerUrl.isEmpty()) {
+            logInfo("Config server url not detected");
             return data;
         }
         String appName = firstNonEmpty(
@@ -412,6 +421,7 @@ public class SpringConfigAgent {
         }
         requestUrl += appName + "/" + profile;
 
+        logInfo("Config server request url=%s source=%s", requestUrl, hints.source);
         data.put("url", requestUrl);
         data.put("source", hints.source);
         try {
@@ -441,6 +451,7 @@ public class SpringConfigAgent {
             connection.setRequestProperty("Authorization", "Basic " + token);
         }
             int status = connection.getResponseCode();
+            logInfo("Config server response status=%s", status);
             data.put("status", status);
             InputStream stream = status >= 200 && status < 300
                 ? connection.getInputStream()
@@ -451,6 +462,7 @@ public class SpringConfigAgent {
                 data.put("content", payload.content);
             }
         } catch (Exception exc) {
+            logWarn("Config server request failed: %s", exc.getMessage());
             data.put("error", exc.getMessage());
         }
         return data;
@@ -820,6 +832,9 @@ public class SpringConfigAgent {
             List<String> full = new ArrayList<>(path);
             full.add(key);
             String compound = String.join(".", full);
+            if (isQuoteOnly(value)) {
+                logWarn("YAML value is only a quote for key=%s", compound);
+            }
             values.put(compound, stripQuotes(value));
         }
         return values;
@@ -933,11 +948,80 @@ public class SpringConfigAgent {
 
     private static String stripQuotes(String value) {
         String trimmed = value.trim();
+        if (trimmed.length() <= 1) {
+            if (isQuoteOnly(trimmed)) {
+                logWarn("Value is a single quote character suggesting malformed config");
+            }
+            return trimmed;
+        }
         if ((trimmed.startsWith("\"") && trimmed.endsWith("\""))
             || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
             return trimmed.substring(1, trimmed.length() - 1);
         }
         return trimmed;
+    }
+
+    private static boolean isQuoteOnly(String value) {
+        if (value == null) {
+            return false;
+        }
+        String trimmed = value.trim();
+        return "\"".equals(trimmed) || "'".equals(trimmed);
+    }
+
+    private static void setLogLevel(String value) {
+        logLevel = logLevelValue(value);
+    }
+
+    private static int logLevelValue(String value) {
+        if (value == null) {
+            return 2;
+        }
+        String normalized = value.trim().toUpperCase(Locale.ROOT);
+        switch (normalized) {
+            case "ERROR":
+                return 0;
+            case "WARN":
+            case "WARNING":
+                return 1;
+            case "INFO":
+                return 2;
+            case "DEBUG":
+                return 3;
+            default:
+                return 2;
+        }
+    }
+
+    private static void logError(String message, Object... args) {
+        log("ERROR", message, args);
+    }
+
+    private static void logWarn(String message, Object... args) {
+        log("WARN", message, args);
+    }
+
+    private static void logInfo(String message, Object... args) {
+        log("INFO", message, args);
+    }
+
+    private static void logDebug(String message, Object... args) {
+        log("DEBUG", message, args);
+    }
+
+    private static void log(String level, String message, Object... args) {
+        if (logLevelValue(level) > logLevel) {
+            return;
+        }
+        String rendered = args == null || args.length == 0
+            ? message
+            : String.format(Locale.ROOT, message, args);
+        String payload = Instant.now().toString() + " " + level + " spring-config-agent: " + rendered;
+        if ("ERROR".equals(level) || "WARN".equals(level)) {
+            System.err.println(payload);
+        } else {
+            System.out.println(payload);
+        }
     }
 
     private static class ConfigCandidate {
