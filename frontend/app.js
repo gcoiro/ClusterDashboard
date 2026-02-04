@@ -65,6 +65,7 @@ const REPORT_RETRY_DELAY_MS = 1000;
 const REPORT_HISTORY_KEY = 'springConfigReportHistory';
 const REPORT_HISTORY_LIMIT = 12;
 const REPORT_SNAPSHOT_VERSION = 1;
+const REPORT_ANNOTATION_SAVE_DELAY_MS = 300;
 const ROLLOUT_POLL_INTERVAL_MS = 10000;
 const ROLLOUT_POLL_LIMIT = 60;
 const REPORT_STATUS_STYLES = {
@@ -85,6 +86,7 @@ let lastReportHistorySignature = null;
 const reportAnnotations = new Map();
 const reportAnnotationSeeds = new Map();
 let reportViewState = { namespace: null, app: null };
+let reportAnnotationSaveTimer = null;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -342,9 +344,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const keyCard = annotation.closest('.report-key');
             const isSelected = keyCard && keyCard.classList.contains('is-selected');
             const selectedCards = isSelected ? getSelectedReportKeyCards() : [];
-            if (selectedCards.length > 1) {
-                const shouldCheck = target.checked;
-                selectedCards.forEach(card => {
+                if (selectedCards.length > 1) {
+                    const shouldCheck = target.checked;
+                    selectedCards.forEach(card => {
                     const cardMatchId = card.dataset.matchId;
                     if (!cardMatchId) {
                         return;
@@ -371,10 +373,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     }
                     updateReportKeyState(card, cardEntry);
-                });
-                refreshReportCharts();
-                return;
-            }
+                    });
+                    refreshReportCharts();
+                    scheduleReportAnnotationSave();
+                    return;
+                }
 
             entry[field] = target.checked;
             if (target.checked) {
@@ -397,6 +400,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateReportKeyState(keyCard, entry);
             }
             refreshReportCharts();
+            scheduleReportAnnotationSave();
         }
     });
 
@@ -432,10 +436,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     input.value = target.value;
                 }
             });
+            scheduleReportAnnotationSave();
             return;
         }
         const entry = getReportAnnotation(matchId);
         entry.comment = target.value;
+        scheduleReportAnnotationSave();
     });
 
     setReportStatus('Enter a regex pattern and run the report.', 'info');
@@ -564,12 +570,18 @@ function saveReportHistoryEntry(entry) {
         caseInsensitive: Boolean(entry.caseInsensitive),
         searchIn: entry.searchIn || 'value',
         namespaces: Array.isArray(entry.namespaces) ? entry.namespaces.slice() : [],
-        savedAt: new Date().toISOString(),
     };
     const signature = buildHistorySignature(normalized);
-    const history = loadReportHistory().filter(item => buildHistorySignature(item) !== signature);
-    history.unshift(normalized);
-    writeReportHistory(history.slice(0, REPORT_HISTORY_LIMIT));
+    const history = loadReportHistory();
+    const existing = history.find(item => buildHistorySignature(item) === signature);
+    const merged = {
+        ...(existing || {}),
+        ...normalized,
+        savedAt: new Date().toISOString(),
+    };
+    const nextHistory = history.filter(item => buildHistorySignature(item) !== signature);
+    nextHistory.unshift(merged);
+    writeReportHistory(nextHistory.slice(0, REPORT_HISTORY_LIMIT));
     return signature;
 }
 
@@ -612,6 +624,53 @@ function updateReportHistoryResults(signature, reportData) {
     target.reportData = reportData;
     target.reportSavedAt = new Date().toISOString();
     writeReportHistory(history);
+}
+
+function buildReportAnnotationsForHistory() {
+    if (!reportResultsState) {
+        return [];
+    }
+    const reportPayload = buildReportPayloadFromState(getSelectedReportNamespaces());
+    if (!reportPayload) {
+        return [];
+    }
+    return collectReportAnnotations(reportPayload);
+}
+
+function resolveReportHistorySignature() {
+    if (lastReportHistorySignature) {
+        return lastReportHistorySignature;
+    }
+    const signature = buildHistorySignature(buildHistoryEntryFromSelection(getSelectedReportNamespaces()));
+    lastReportHistorySignature = signature;
+    return signature;
+}
+
+function saveReportAnnotationsForSignature(signature) {
+    if (!signature) {
+        return;
+    }
+    const history = loadReportHistory();
+    const target = history.find(item => buildHistorySignature(item) === signature);
+    if (!target) {
+        return;
+    }
+    target.annotations = buildReportAnnotationsForHistory();
+    target.annotationsSavedAt = new Date().toISOString();
+    writeReportHistory(history);
+}
+
+function scheduleReportAnnotationSave() {
+    const signature = resolveReportHistorySignature();
+    if (!signature) {
+        return;
+    }
+    if (reportAnnotationSaveTimer) {
+        clearTimeout(reportAnnotationSaveTimer);
+    }
+    reportAnnotationSaveTimer = setTimeout(() => {
+        saveReportAnnotationsForSignature(signature);
+    }, REPORT_ANNOTATION_SAVE_DELAY_MS);
 }
 
 function setReportStatusFromHistory(reportData) {
@@ -662,6 +721,7 @@ function applyReportHistoryEntry(entry) {
 
     if (entry.reportData) {
         clearReportAnnotations();
+        applyReportAnnotations(entry.annotations);
         if (entry.reportData.mode === 'single') {
             renderReportResults(entry.reportData.data);
         } else if (entry.reportData.mode === 'multi') {
@@ -1653,7 +1713,7 @@ async function runSpringConfigReport() {
         return;
     }
 
-    clearReportMatchAnnotations();
+    clearReportAnnotations();
 
     const caseInsensitive = reportCase.checked;
     const searchIn = reportScope.value || 'value';
@@ -1664,6 +1724,11 @@ async function runSpringConfigReport() {
         searchIn,
         namespaces: selectedNamespaces,
     });
+    const cachedHistory = loadReportHistory();
+    const cachedEntry = cachedHistory.find(item => buildHistorySignature(item) === lastReportHistorySignature);
+    if (cachedEntry && Array.isArray(cachedEntry.annotations)) {
+        applyReportAnnotations(cachedEntry.annotations);
+    }
     renderReportHistory();
 
     setReportPostRunVisible(false);
@@ -1851,11 +1916,13 @@ function collectReportAnnotations(reportPayload) {
             const workloadName = workload.workloadName || '';
             (workload.matches || []).forEach(match => {
                 const matchId = getReportMatchId(namespace, workloadName, match);
-                const annotation = getReportAnnotation(matchId);
+                const stableId = getReportStableId(namespace, workloadName, match);
+                const annotation = getReportAnnotation(matchId, stableId);
                 const hasComment = Boolean(annotation.comment && annotation.comment.trim());
                 if (annotation.justified || annotation.migrationRequired || hasComment) {
                     annotations.push({
                         matchId,
+                        stableId,
                         justified: Boolean(annotation.justified),
                         migrationRequired: Boolean(annotation.migrationRequired),
                         comment: annotation.comment || '',
@@ -1877,6 +1944,7 @@ function collectReportAnnotations(reportPayload) {
             if (annotation.justified || annotation.migrationRequired || hasComment) {
                 annotations.push({
                     matchId,
+                    stableId,
                     justified: Boolean(annotation.justified),
                     migrationRequired: Boolean(annotation.migrationRequired),
                     comment: annotation.comment || '',
@@ -1948,20 +2016,25 @@ function applyReportSnapshot(snapshot) {
     const missingNamespaces = snapshotNamespaces.filter(ns => !availableNamespaces.includes(ns));
 
     clearReportAnnotations();
-    if (Array.isArray(snapshot.annotations)) {
-        snapshot.annotations.forEach(item => {
-            if (!item || !item.matchId) {
-                return;
-            }
-            reportAnnotations.set(item.matchId, {
-                justified: Boolean(item.justified),
-                migrationRequired: Boolean(item.migrationRequired),
-                comment: item.comment ? String(item.comment) : '',
-            });
-        });
-    }
+    applyReportAnnotations(snapshot.annotations);
 
     const reportPayload = snapshot.report;
+    lastReportHistorySignature = saveReportHistoryEntry({
+        pattern: snapshot.pattern || '',
+        caseInsensitive: Boolean(snapshot.caseInsensitive),
+        searchIn: snapshot.searchIn || 'value',
+        namespaces: snapshotNamespaces,
+    });
+    if (lastReportHistorySignature) {
+        updateReportHistoryResults(lastReportHistorySignature, reportPayload);
+        const history = loadReportHistory();
+        const target = history.find(item => buildHistorySignature(item) === lastReportHistorySignature);
+        if (target) {
+            target.annotations = Array.isArray(snapshot.annotations) ? snapshot.annotations : [];
+            target.annotationsSavedAt = new Date().toISOString();
+            writeReportHistory(history);
+        }
+    }
     seedReportAnnotationSeeds(reportPayload);
     if (reportPayload.mode === 'single' && reportPayload.data) {
         if (!reportPayload.data.namespace && snapshotNamespaces.length === 1) {
@@ -1984,6 +2057,7 @@ function applyReportSnapshot(snapshot) {
     } else {
         setReportStatus('Loaded saved report.', 'success');
     }
+    renderReportHistory();
 }
 
 function handleReportLoad(event) {
@@ -2159,8 +2233,24 @@ function clearReportAnnotations() {
     reportAnnotationSeeds.clear();
 }
 
-function clearReportMatchAnnotations() {
-    reportAnnotations.clear();
+function applyReportAnnotations(annotations) {
+    if (!Array.isArray(annotations)) {
+        return;
+    }
+    annotations.forEach(item => {
+        if (!item || !item.matchId) {
+            return;
+        }
+        const entry = {
+            justified: Boolean(item.justified),
+            migrationRequired: Boolean(item.migrationRequired),
+            comment: item.comment ? String(item.comment) : '',
+        };
+        reportAnnotations.set(item.matchId, entry);
+        if (item.stableId) {
+            reportAnnotationSeeds.set(item.stableId, entry);
+        }
+    });
 }
 
 function getReportAnnotation(matchId, stableId) {
