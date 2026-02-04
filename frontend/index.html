@@ -93,6 +93,34 @@
                     </div>
                     <div id="report-history-list" class="report-history-list"></div>
                 </div>
+                <div id="report-search" class="report-search report-postrun">
+                    <div class="report-search-row">
+                        <div class="report-search-title">Search inside report</div>
+                        <div class="report-search-controls">
+                            <input id="report-search-term" class="report-input" type="search" placeholder="Search key or value">
+                            <select id="report-search-scope" class="report-filter">
+                                <option value="value">Values only</option>
+                                <option value="key">Keys only</option>
+                                <option value="both">Keys + values</option>
+                            </select>
+                            <label class="report-toggle">
+                                <input id="report-search-case" type="checkbox">
+                                Case-sensitive
+                            </label>
+                            <button id="report-search-select" class="btn btn-secondary">Select matches</button>
+                            <button id="report-search-add" class="btn btn-secondary">Add matches</button>
+                            <button id="report-search-clear" class="btn btn-secondary">Clear selection</button>
+                        </div>
+                    </div>
+                    <div class="report-search-row">
+                        <div id="report-search-status" class="report-search-status">Run a report to search matching keys.</div>
+                        <div class="report-search-actions">
+                            <button id="report-search-justified" class="btn btn-secondary">Mark selected: Justified</button>
+                            <button id="report-search-migration" class="btn btn-secondary">Mark selected: Migration</button>
+                            <button id="report-search-unset" class="btn btn-secondary">Clear flags</button>
+                        </div>
+                    </div>
+                </div>
                 <div id="report-status" class="report-status"></div>
                 <div id="report-visuals" class="report-visuals">
                     <div class="report-visuals-header">

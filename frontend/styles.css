@@ -306,6 +306,10 @@ header h1 {
     display: inline-flex;
 }
 
+.report-panel.is-ready .report-search.report-postrun {
+    display: block;
+}
+
 .report-file-input {
     display: none;
 }
@@ -404,6 +408,58 @@ header h1 {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
+}
+
+.report-search {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    background: #f8fafc;
+    margin-bottom: 12px;
+}
+
+.report-search-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.report-search-row + .report-search-row {
+    margin-top: 10px;
+}
+
+.report-search-title {
+    font-weight: 700;
+    color: var(--ink);
+}
+
+.report-search-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.report-search-status {
+    color: var(--muted);
+    font-size: 0.95em;
+}
+
+.report-search-status.success {
+    color: #0f766e;
+}
+
+.report-search-status.error {
+    color: #b91c1c;
+}
+
+.report-search-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
 }
 
 .report-history-chip {

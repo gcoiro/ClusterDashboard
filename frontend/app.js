@@ -8,6 +8,7 @@ const loadingDiv = document.getElementById('loading');
 const errorDiv = document.getElementById('error');
 const homePanel = document.getElementById('home-panel');
 const reportPage = document.getElementById('report-page');
+const reportPanel = document.getElementById('report-panel');
 const namespacePage = document.getElementById('namespace-page');
 const gotoReportBtn = document.getElementById('goto-report');
 const gotoNamespaceBtn = document.getElementById('goto-namespace');
@@ -48,6 +49,16 @@ const reportHistorySelect = document.getElementById('report-history-select');
 const reportHistoryApply = document.getElementById('report-history-apply');
 const reportHistoryClear = document.getElementById('report-history-clear');
 const reportHistoryList = document.getElementById('report-history-list');
+const reportSearchTerm = document.getElementById('report-search-term');
+const reportSearchScope = document.getElementById('report-search-scope');
+const reportSearchCase = document.getElementById('report-search-case');
+const reportSearchSelect = document.getElementById('report-search-select');
+const reportSearchAdd = document.getElementById('report-search-add');
+const reportSearchClear = document.getElementById('report-search-clear');
+const reportSearchStatus = document.getElementById('report-search-status');
+const reportSearchJustified = document.getElementById('report-search-justified');
+const reportSearchMigration = document.getElementById('report-search-migration');
+const reportSearchUnset = document.getElementById('report-search-unset');
 const reportVisuals = document.getElementById('report-visuals');
 const reportNamespaceChart = document.getElementById('report-namespace-chart');
 const reportNamespaceLegend = document.getElementById('report-namespace-legend');
@@ -245,6 +256,51 @@ document.addEventListener('DOMContentLoaded', () => {
     if (reportHistoryClear) {
         reportHistoryClear.addEventListener('click', () => {
             clearReportHistory();
+        });
+    }
+
+    if (reportSearchSelect) {
+        reportSearchSelect.addEventListener('click', () => {
+            runReportSearchSelection('replace');
+        });
+    }
+
+    if (reportSearchAdd) {
+        reportSearchAdd.addEventListener('click', () => {
+            runReportSearchSelection('add');
+        });
+    }
+
+    if (reportSearchClear) {
+        reportSearchClear.addEventListener('click', () => {
+            setReportKeySelection(false);
+            updateReportSearchStatus('Selection cleared.', 'info');
+        });
+    }
+
+    if (reportSearchTerm) {
+        reportSearchTerm.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                runReportSearchSelection('replace');
+            }
+        });
+    }
+
+    if (reportSearchJustified) {
+        reportSearchJustified.addEventListener('click', () => {
+            applyReportSelectionFlag('justified');
+        });
+    }
+
+    if (reportSearchMigration) {
+        reportSearchMigration.addEventListener('click', () => {
+            applyReportSelectionFlag('migrationRequired');
+        });
+    }
+
+    if (reportSearchUnset) {
+        reportSearchUnset.addEventListener('click', () => {
+            applyReportSelectionFlag('clear');
         });
     }
 
@@ -790,6 +846,141 @@ function renderReportHistory() {
     reportHistoryList.innerHTML = chipsHtml;
 }
 
+function updateReportSearchStatus(message, type = 'info') {
+    if (!reportSearchStatus) {
+        return;
+    }
+    reportSearchStatus.textContent = message;
+    reportSearchStatus.className = `report-search-status ${type}`;
+}
+
+function getReportSearchableKeyCards() {
+    if (!reportResults) {
+        return [];
+    }
+    return Array.from(reportResults.querySelectorAll('.report-key[data-key]'));
+}
+
+function updateReportSearchSummary() {
+    if (!reportSearchStatus) {
+        return;
+    }
+    if (!reportResultsState) {
+        updateReportSearchStatus('Run a report to search matching keys.', 'info');
+        return;
+    }
+    const total = getReportSearchableKeyCards().length;
+    updateReportSearchStatus(`Ready to search ${total} key(s).`, 'info');
+}
+
+function normalizeSearchText(text, caseSensitive) {
+    if (!text) {
+        return '';
+    }
+    return caseSensitive ? text : text.toLowerCase();
+}
+
+function cardMatchesReportSearch(card, term, scope, caseSensitive) {
+    if (!card || !term) {
+        return false;
+    }
+    const keyText = normalizeSearchText(card.dataset.key || '', caseSensitive);
+    const valueText = normalizeSearchText(card.dataset.value || '', caseSensitive);
+    const searchTerm = normalizeSearchText(term, caseSensitive);
+
+    if (!searchTerm) {
+        return false;
+    }
+
+    if (scope === 'key') {
+        return keyText.includes(searchTerm);
+    }
+    if (scope === 'value') {
+        return valueText.includes(searchTerm);
+    }
+    return keyText.includes(searchTerm) || valueText.includes(searchTerm);
+}
+
+function runReportSearchSelection(mode = 'replace') {
+    if (!reportResultsState) {
+        updateReportSearchStatus('Run a report before searching.', 'error');
+        return;
+    }
+    const term = reportSearchTerm ? reportSearchTerm.value.trim() : '';
+    if (!term) {
+        updateReportSearchStatus('Enter a search value for keys or values.', 'error');
+        return;
+    }
+    const scope = reportSearchScope ? reportSearchScope.value : 'value';
+    const caseSensitive = reportSearchCase ? reportSearchCase.checked : false;
+
+    const cards = getReportSearchableKeyCards();
+    const matches = cards.filter(card => cardMatchesReportSearch(card, term, scope, caseSensitive));
+
+    if (mode !== 'add') {
+        setReportKeySelection(false);
+    }
+
+    matches.forEach(card => setReportKeySelected(card, true));
+
+    if (!matches.length) {
+        updateReportSearchStatus(`No matches for "${term}".`, 'error');
+        return;
+    }
+
+    const totalSelected = getSelectedReportKeyCards().length;
+    const actionLabel = mode === 'add' ? 'Added' : 'Selected';
+    updateReportSearchStatus(`${actionLabel} ${matches.length} key(s). ${totalSelected} selected.`, 'success');
+}
+
+function applyReportSelectionFlag(mode) {
+    if (!reportResultsState) {
+        updateReportSearchStatus('Run a report before applying flags.', 'error');
+        return;
+    }
+    const selectedCards = getSelectedReportKeyCards();
+    if (!selectedCards.length) {
+        updateReportSearchStatus('Select at least one key to apply flags.', 'error');
+        return;
+    }
+    selectedCards.forEach(card => {
+        const matchId = card.dataset.matchId;
+        if (!matchId) {
+            return;
+        }
+        const entry = getReportAnnotation(matchId);
+        if (mode === 'clear') {
+            entry.justified = false;
+            entry.migrationRequired = false;
+        } else {
+            entry[mode] = true;
+            if (mode === 'justified') {
+                entry.migrationRequired = false;
+            }
+            if (mode === 'migrationRequired') {
+                entry.justified = false;
+            }
+        }
+        const annotation = card.querySelector('.report-annotation');
+        if (annotation) {
+            const justifiedInput = annotation.querySelector('input[type="checkbox"][data-field="justified"]');
+            const migrationInput = annotation.querySelector('input[type="checkbox"][data-field="migrationRequired"]');
+            if (justifiedInput) {
+                justifiedInput.checked = Boolean(entry.justified);
+            }
+            if (migrationInput) {
+                migrationInput.checked = Boolean(entry.migrationRequired);
+            }
+        }
+        updateReportKeyState(card, entry);
+    });
+    refreshReportCharts();
+    scheduleReportAnnotationSave();
+
+    const label = mode === 'clear' ? 'Cleared flags' : `Marked ${mode === 'justified' ? 'justified' : 'migration'}`;
+    updateReportSearchStatus(`${label} for ${selectedCards.length} key(s).`, 'success');
+}
+
 // Load workloads
 async function loadWorkloads() {
     showLoading();
@@ -927,12 +1118,16 @@ function setReportPostRunVisible(isVisible) {
         return;
     }
     reportActions.classList.toggle('is-ready', isVisible);
+    if (reportPanel) {
+        reportPanel.classList.toggle('is-ready', isVisible);
+    }
     if (reportVisuals) {
         reportVisuals.classList.toggle('is-visible', isVisible);
     }
     if (!isVisible) {
         clearReportVisuals();
     }
+    updateReportSearchSummary();
 }
 
 function setNamespaceScaleStatus(message, type = 'info') {
@@ -1033,7 +1228,7 @@ function buildReportCards(data, openApps) {
                     annotation.migrationRequired ? 'is-migration' : '',
                 ].filter(Boolean).join(' ');
                 return `
-                    <div class="report-key ${keyStateClass}" data-match-id="${matchId}" role="button" tabindex="0" aria-expanded="false">
+                    <div class="report-key ${keyStateClass}" data-match-id="${matchId}" data-key="${escapeHtml(keyEntry.key || '')}" data-value="${escapeHtml(valueText)}" role="button" tabindex="0" aria-expanded="false">
                         <div class="report-key-name">${escapeHtml(keyEntry.key)}</div>
                         <div class="report-value">${highlightedValue}</div>
                         <span>${escapeHtml(keyEntry.source || 'effective')} | match: ${escapeHtml(keyEntry.matchOn || 'value')}</span>
@@ -1239,12 +1434,14 @@ function renderReportResults(data) {
     reportResultsState = { mode: 'single', data };
     renderReportResultsView(data);
     refreshReportCharts();
+    updateReportSearchSummary();
 }
 
 function renderMultiNamespaceResults(reports) {
     reportResultsState = { mode: 'multi', reports };
     renderMultiNamespaceResultsView(reports);
     refreshReportCharts();
+    updateReportSearchSummary();
 }
 
 function highlightMatches(text, pattern, caseInsensitive) {
