@@ -108,6 +108,7 @@ const reportAnnotations = new Map();
 const reportAnnotationSeeds = new Map();
 let reportViewState = { namespace: null, app: null };
 let reportAnnotationSaveTimer = null;
+let lastAgentApplySummary = null;
 let reportNamespaceChartMode = 'detail';
 let reportNamespaceCount = 0;
 const REPORT_NAMESPACE_PIE_LIMIT = 120;
@@ -4090,13 +4091,15 @@ async function applySpringConfigAgentBulk(targets, options = {}) {
         });
     }
 
+    lastAgentApplySummary = {
+        title: failureTitle || 'Agent apply summary',
+        scopeLabel,
+        successes,
+        failures,
+        total: targets.length,
+    };
     if (showSummaryModal) {
-        showAgentApplySummaryModal({
-            successes,
-            failures,
-            scopeLabel,
-            title: 'Agent apply summary',
-        });
+        openAgentApplySummaryTab(lastAgentApplySummary);
     }
 
     if (failureCount) {
@@ -4758,6 +4761,165 @@ function openReportSummaryTab() {
     const newTab = window.open(url, '_blank');
     if (!newTab) {
         setReportStatus('Popup blocked. Allow popups to open the summary tab.', 'error');
+        URL.revokeObjectURL(url);
+        return;
+    }
+    setTimeout(() => {
+        URL.revokeObjectURL(url);
+    }, 60000);
+}
+
+function openAgentApplySummaryTab(summary) {
+    if (!summary) {
+        setReportStatus('No agent summary available.', 'error');
+        return;
+    }
+
+    const successes = Array.isArray(summary.successes) ? summary.successes : [];
+    const failures = Array.isArray(summary.failures) ? summary.failures : [];
+    const scopeLabel = summary.scopeLabel || 'applications';
+    const totalCount = Number.isFinite(summary.total) ? summary.total : successes.length + failures.length;
+    const titleText = summary.title || 'Agent apply summary';
+
+    const successHtml = successes.length
+        ? successes.map(entry => {
+            const namespace = escapeHtml(entry.namespace || 'unknown-namespace');
+            const workloadName = escapeHtml(entry.workloadName || 'unknown-app');
+            const workloadKind = escapeHtml(entry.workloadKind || 'workload');
+            return `
+                <div class="list-item">
+                    <div class="list-title">${namespace}/${workloadName}</div>
+                    <div class="list-meta">${workloadKind}</div>
+                </div>
+            `;
+        }).join('')
+        : '<div class="muted">No applications were updated.</div>';
+
+    const failureHtml = failures.length
+        ? failures.map(entry => {
+            const namespace = escapeHtml(entry.namespace || 'unknown-namespace');
+            const workloadName = escapeHtml(entry.workloadName || 'unknown-app');
+            const workloadKind = escapeHtml(entry.workloadKind || 'workload');
+            const reason = escapeHtml(entry.errorMessage || 'Failed to apply Spring Config Agent.');
+            return `
+                <div class="list-item">
+                    <div class="list-title">${namespace}/${workloadName}</div>
+                    <div class="list-meta">${workloadKind}</div>
+                    <div class="list-reason">${reason}</div>
+                </div>
+            `;
+        }).join('')
+        : '<div class="muted">No failures.</div>';
+
+    const docHtml = `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>${escapeHtml(titleText)}</title>
+            <style>
+                :root {
+                    color-scheme: light;
+                    --bg: #f8fafc;
+                    --panel: #ffffff;
+                    --ink: #0f172a;
+                    --muted: #64748b;
+                    --border: #e2e8f0;
+                    --shadow: 0 24px 60px rgba(15, 23, 42, 0.12);
+                    --success: #16a34a;
+                    --error: #dc2626;
+                }
+                * { box-sizing: border-box; }
+                body {
+                    margin: 0;
+                    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+                    background: var(--bg);
+                    color: var(--ink);
+                }
+                main {
+                    max-width: 980px;
+                    margin: 32px auto;
+                    padding: 0 20px 40px;
+                }
+                header {
+                    background: var(--panel);
+                    border: 1px solid var(--border);
+                    border-radius: 18px;
+                    padding: 22px 26px;
+                    box-shadow: var(--shadow);
+                }
+                h1 { margin: 0 0 8px; font-size: 1.6rem; }
+                .meta { color: var(--muted); font-size: 0.95rem; }
+                .grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                    gap: 16px;
+                    margin-top: 18px;
+                }
+                .card {
+                    background: var(--panel);
+                    border: 1px solid var(--border);
+                    border-radius: 16px;
+                    padding: 16px;
+                    box-shadow: var(--shadow);
+                }
+                .stat-label { color: var(--muted); font-size: 0.9rem; }
+                .stat-value { font-size: 1.6rem; font-weight: 600; }
+                section { margin-top: 24px; }
+                .section-title { font-size: 1.1rem; margin: 0 0 12px; }
+                .list-item {
+                    background: var(--panel);
+                    border: 1px solid var(--border);
+                    border-radius: 14px;
+                    padding: 12px 14px;
+                    margin-bottom: 10px;
+                    box-shadow: var(--shadow);
+                }
+                .list-title { font-weight: 600; }
+                .list-meta { color: var(--muted); font-size: 0.9rem; margin-top: 2px; }
+                .list-reason { color: var(--error); font-size: 0.9rem; margin-top: 6px; }
+                .muted { color: var(--muted); }
+            </style>
+        </head>
+        <body>
+            <main>
+                <header>
+                    <h1>${escapeHtml(titleText)}</h1>
+                    <div class="meta">Scope: ${escapeHtml(scopeLabel)}</div>
+                    <div class="grid">
+                        <div class="card">
+                            <div class="stat-label">Total ${escapeHtml(scopeLabel)}</div>
+                            <div class="stat-value">${totalCount}</div>
+                        </div>
+                        <div class="card">
+                            <div class="stat-label">Applied</div>
+                            <div class="stat-value" style="color: var(--success)">${successes.length}</div>
+                        </div>
+                        <div class="card">
+                            <div class="stat-label">Failed</div>
+                            <div class="stat-value" style="color: var(--error)">${failures.length}</div>
+                        </div>
+                    </div>
+                </header>
+                <section>
+                    <h2 class="section-title">Applied successfully</h2>
+                    ${successHtml}
+                </section>
+                <section>
+                    <h2 class="section-title">Failed</h2>
+                    ${failureHtml}
+                </section>
+            </main>
+        </body>
+        </html>
+    `;
+
+    const blob = new Blob([docHtml], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const newTab = window.open(url, '_blank');
+    if (!newTab) {
+        setReportStatus('Popup blocked. Allow popups to open the agent summary tab.', 'error');
         URL.revokeObjectURL(url);
         return;
     }
