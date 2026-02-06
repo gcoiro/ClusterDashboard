@@ -3861,6 +3861,57 @@ function collectReportTargets({ namespaceFilter, includeMatched, includeErrors }
     return targets;
 }
 
+function isWorkloadFlaggedByMatches(namespace, workloadName, matches) {
+    if (!matches || !matches.length) {
+        return false;
+    }
+    let anyMigration = false;
+    let allJustified = true;
+    matches.forEach(match => {
+        const matchId = getReportMatchId(namespace, workloadName, match);
+        const stableId = getReportStableId(namespace, workloadName, match);
+        const annotation = getReportAnnotation(matchId, stableId);
+        if (annotation.migrationRequired) {
+            anyMigration = true;
+        }
+        if (!annotation.justified) {
+            allJustified = false;
+        }
+    });
+    return anyMigration || allJustified;
+}
+
+function collectMatchedTargetsWithFlags() {
+    const targets = [];
+    const flaggedTargets = [];
+    const entries = getReportDataList();
+
+    entries.forEach(entry => {
+        const namespace = entry.namespace || '';
+        if (!namespace) {
+            return;
+        }
+        (entry.data.matched || []).forEach(item => {
+            const workloadName = item.workloadName || '';
+            if (!workloadName) {
+                return;
+            }
+            if (item.agentApplied) {
+                return;
+            }
+            const workloadKind = item.workloadKind || '';
+            const isFlagged = isWorkloadFlaggedByMatches(namespace, workloadName, item.matches || []);
+            const target = { namespace, workloadName, workloadKind, isFlagged };
+            targets.push(target);
+            if (isFlagged) {
+                flaggedTargets.push(target);
+            }
+        });
+    });
+
+    return { targets, flaggedTargets };
+}
+
 function resolveSkippedAgentButton(target) {
     if (!reportResults || !target) {
         return null;
@@ -4070,14 +4121,29 @@ async function applySpringConfigAgentToAllApps(buttonEl) {
         return;
     }
 
-    const targets = collectReportTargets({
-        includeMatched: true,
-        includeErrors: false,
-    });
+    const { targets: rawTargets, flaggedTargets } = collectMatchedTargetsWithFlags();
+    let targets = rawTargets;
+    let confirmMessage = `Apply Spring Config Agent to ${targets.length} spring application(s) across all namespaces?`;
+    if (flaggedTargets.length) {
+        const includeFlagged = confirm(
+            `There are ${flaggedTargets.length} application(s) already marked Justified or Migration required.\n\n` +
+            `OK = include them (apply to ${targets.length} total)\n` +
+            `Cancel = skip them (apply to ${targets.length - flaggedTargets.length} total)`,
+        );
+        if (!includeFlagged) {
+            targets = rawTargets.filter(target => !target.isFlagged);
+        }
+        confirmMessage = null;
+    }
+
+    if (!targets.length) {
+        setReportStatus('No spring applications left to apply Spring Config Agent.', 'info');
+        return;
+    }
 
     await applySpringConfigAgentBulk(targets, {
         scopeLabel: 'spring applications',
-        confirmMessage: `Apply Spring Config Agent to ${targets.length} spring application(s) across all namespaces?`,
+        confirmMessage,
         triggerButton: buttonEl,
         showFailureModal: false,
         failureTitle: 'Agent apply failures',
