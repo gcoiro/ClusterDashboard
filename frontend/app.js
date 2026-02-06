@@ -4031,13 +4031,17 @@ async function applySpringConfigAgentToSkippedNamespace(namespace, buttonEl) {
 
     const { targets: rawTargets, flaggedTargets } = collectSkippedTargetsForNamespace(namespace);
     let targets = rawTargets;
+    let confirmMessage = `Apply Spring Config Agent to ${targets.length} skipped application(s) in "${namespace}"?`;
     if (flaggedTargets.length) {
-        const confirmInclude = confirm(
-            `There are ${flaggedTargets.length} skipped application(s) already marked Justified or Migration required. Include them in this run?`,
+        const includeFlagged = confirm(
+            `There are ${flaggedTargets.length} skipped application(s) already marked Justified or Migration required in "${namespace}".\n\n` +
+            `OK = include them (apply to ${targets.length} total)\n` +
+            `Cancel = skip them (apply to ${targets.length - flaggedTargets.length} total)`,
         );
-        if (!confirmInclude) {
+        if (!includeFlagged) {
             targets = rawTargets.filter(target => !target.isFlagged);
         }
+        confirmMessage = null;
     }
     if (!targets.length) {
         setReportStatus(`No skipped applications left to apply in ${namespace}.`, 'info');
@@ -4046,7 +4050,7 @@ async function applySpringConfigAgentToSkippedNamespace(namespace, buttonEl) {
 
     await applySpringConfigAgentBulk(targets, {
         scopeLabel: `skipped applications in ${namespace}`,
-        confirmMessage: `Apply Spring Config Agent to ${targets.length} skipped application(s) in "${namespace}"?`,
+        confirmMessage,
         buttonResolver: resolveSkippedAgentButton,
         triggerButton: buttonEl,
     });
@@ -4636,14 +4640,12 @@ function openReportSummaryTab() {
         </html>
     `;
 
-    const newTab = window.open('', '_blank', 'noopener,noreferrer');
+    const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(docHtml)}`;
+    const newTab = window.open(dataUrl, '_blank');
     if (!newTab) {
         setReportStatus('Popup blocked. Allow popups to open the summary tab.', 'error');
         return;
     }
-    newTab.document.open();
-    newTab.document.write(docHtml);
-    newTab.document.close();
 }
 
 // Scale workload
