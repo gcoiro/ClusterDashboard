@@ -80,9 +80,6 @@ const agentApplySummaryTitle = document.getElementById('agent-apply-summary-titl
 const agentApplySummaryMeta = document.getElementById('agent-apply-summary-meta');
 const agentApplySummarySuccess = document.getElementById('agent-apply-summary-success');
 const agentApplySummaryFailures = document.getElementById('agent-apply-summary-failures');
-const reportSummaryModal = document.getElementById('report-summary-modal');
-const reportSummaryMeta = document.getElementById('report-summary-meta');
-const reportSummaryBody = document.getElementById('report-summary-body');
 
 const REPORT_RETRY_LIMIT = 3;
 const REPORT_RETRY_DELAY_MS = 1000;
@@ -111,6 +108,9 @@ const reportAnnotations = new Map();
 const reportAnnotationSeeds = new Map();
 let reportViewState = { namespace: null, app: null };
 let reportAnnotationSaveTimer = null;
+let reportNamespaceChartMode = 'detail';
+let reportNamespaceCount = 0;
+const REPORT_NAMESPACE_PIE_LIMIT = 120;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -336,7 +336,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (reportSummaryBtn) {
         reportSummaryBtn.addEventListener('click', () => {
-            showReportSummaryModal();
+            openReportSummaryTab();
         });
     }
 
@@ -358,20 +358,8 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    if (reportSummaryModal) {
-        reportSummaryModal.addEventListener('click', (event) => {
-            const target = event.target.closest('[data-modal-close]');
-            if (target) {
-                closeReportSummaryModal();
-            }
-        });
-    }
-
     document.addEventListener('keydown', (event) => {
         if (event.key === 'Escape') {
-            if (reportSummaryModal && reportSummaryModal.classList.contains('is-visible')) {
-                closeReportSummaryModal();
-            }
             if (agentFailureModal && agentFailureModal.classList.contains('is-visible')) {
                 closeAgentFailureModal();
             }
@@ -1554,7 +1542,11 @@ function updateReportDrilldown() {
         parts.push(`Application: ${reportViewState.app}`);
     }
     if (parts.length === 0) {
-        reportDrilldown.textContent = 'Click a namespace slice to drill into apps.';
+        if (reportNamespaceChartMode === 'summary' && reportNamespaceCount) {
+            reportDrilldown.textContent = `Showing status distribution across ${reportNamespaceCount} namespaces. Use the results list to drill into a namespace.`;
+        } else {
+            reportDrilldown.textContent = 'Click a namespace slice to drill into apps.';
+        }
         if (reportResetView) {
             reportResetView.disabled = true;
         }
@@ -1612,6 +1604,8 @@ function clearReportVisuals() {
         reportAppChartTitle.textContent = 'Applications';
     }
     reportViewState = { namespace: null, app: null };
+    reportNamespaceChartMode = 'detail';
+    reportNamespaceCount = 0;
     updateReportDrilldown();
 }
 
@@ -1736,18 +1730,38 @@ function determineNamespaceStatus(apps, namespaceError) {
 }
 
 function renderNamespaceChart(summaries) {
+    reportNamespaceCount = summaries.length;
     const items = summaries.map(summary => ({
         id: summary.namespace,
         label: summary.namespace,
         status: summary.status,
         value: 1,
     }));
-    renderPieChart(reportNamespaceChart, items, {
-        selectedId: reportViewState.namespace,
-        emptyMessage: 'No namespaces matched this pattern.',
-        onClick: (namespace) => selectNamespace(namespace),
-    });
-    renderLegend(reportNamespaceLegend, countStatusItems(items));
+    const counts = countStatusItems(items);
+
+    if (items.length > REPORT_NAMESPACE_PIE_LIMIT) {
+        reportNamespaceChartMode = 'summary';
+        const summaryItems = REPORT_STATUS_ORDER
+            .map(key => ({
+                id: `status:${key}`,
+                label: REPORT_STATUS_STYLES[key].label,
+                status: key,
+                value: counts[key] || 0,
+            }))
+            .filter(item => item.value > 0);
+        renderPieChart(reportNamespaceChart, summaryItems, {
+            emptyMessage: 'No namespaces matched this pattern.',
+        });
+    } else {
+        reportNamespaceChartMode = 'detail';
+        renderPieChart(reportNamespaceChart, items, {
+            selectedId: reportViewState.namespace,
+            emptyMessage: 'No namespaces matched this pattern.',
+            onClick: (namespace) => selectNamespace(namespace),
+        });
+    }
+
+    renderLegend(reportNamespaceLegend, counts);
 }
 
 function renderAppChart(summaries) {
@@ -4180,7 +4194,7 @@ function setInlineStatus(statusEl, message, statusType) {
 }
 
 function updateModalBodyState() {
-    const anyOpen = [agentFailureModal, agentApplySummaryModal, reportSummaryModal]
+    const anyOpen = [agentFailureModal, agentApplySummaryModal]
         .filter(Boolean)
         .some(modal => modal.classList.contains('is-visible'));
     document.body.classList.toggle('is-modal-open', anyOpen);
@@ -4319,15 +4333,6 @@ function showAgentApplySummaryModal(data) {
     updateModalBodyState();
 }
 
-function closeReportSummaryModal() {
-    if (!reportSummaryModal) {
-        return;
-    }
-    reportSummaryModal.classList.remove('is-visible');
-    reportSummaryModal.setAttribute('aria-hidden', 'true');
-    updateModalBodyState();
-}
-
 function extractWorkloadTotal(reportData) {
     if (!reportData) {
         return null;
@@ -4429,12 +4434,9 @@ function buildReportSummaryData() {
     };
 }
 
-function showReportSummaryModal() {
+function openReportSummaryTab() {
     if (!reportResultsState) {
         setReportStatus('Run a report before opening the summary.', 'error');
-        return;
-    }
-    if (!reportSummaryModal || !reportSummaryBody || !reportSummaryMeta) {
         return;
     }
 
@@ -4447,7 +4449,7 @@ function showReportSummaryModal() {
     const pattern = reportPattern.value.trim() || 'n/a';
     const scopeLabel = reportScope.value || 'value';
     const caseLabel = reportCase.checked ? 'insensitive' : 'sensitive';
-    reportSummaryMeta.textContent = `Pattern: ${pattern} | Scope: ${scopeLabel} | Case: ${caseLabel} | Namespaces: ${summary.namespaceCount}`;
+    const metaText = `Pattern: ${pattern} | Scope: ${scopeLabel} | Case: ${caseLabel} | Namespaces: ${summary.namespaceCount}`;
 
     const matchedText = String(summary.matchedCount);
     const errorText = String(summary.errorCount);
@@ -4455,49 +4457,143 @@ function showReportSummaryModal() {
     const notMatchedText = summary.totalKnown ? String(summary.notMatchedCount) : 'n/a';
 
     const topValuesHtml = summary.topValues.length
-        ? `
-            <div class="modal-list">
-                ${summary.topValues.map(item => `
-                    <div class="modal-list-item">
-                        <div class="modal-list-title">${escapeHtml(item.value)}</div>
-                        <div class="modal-list-meta">${item.count} match${item.count === 1 ? '' : 'es'}</div>
-                    </div>
-                `).join('')}
+        ? summary.topValues.map(item => `
+            <div class="list-item">
+                <div class="list-title">${escapeHtml(item.value)}</div>
+                <div class="list-meta">${item.count} match${item.count === 1 ? '' : 'es'}</div>
             </div>
-        `
-        : '<div class="modal-muted">No values matched in this report.</div>';
+        `).join('')
+        : '<div class="muted">No values matched in this report.</div>';
 
     const note = summary.totalKnown
         ? ''
-        : '<div class="modal-muted">Total workload count is not available from the API, so "Not matched" is shown as n/a.</div>';
+        : '<div class="muted">Total workload count is not available from the API, so "Not matched" is shown as n/a.</div>';
 
-    reportSummaryBody.innerHTML = `
-        <div class="modal-summary-grid">
-            <div class="modal-stat">
-                <div class="modal-stat-label">Matched workloads</div>
-                <div class="modal-stat-value">${matchedText}</div>
-            </div>
-            <div class="modal-stat">
-                <div class="modal-stat-label">Not matched workloads</div>
-                <div class="modal-stat-value">${notMatchedText}</div>
-            </div>
-            <div class="modal-stat">
-                <div class="modal-stat-label">Skipped workloads</div>
-                <div class="modal-stat-value">${errorText}</div>
-            </div>
-            <div class="modal-stat">
-                <div class="modal-stat-label">Total workloads</div>
-                <div class="modal-stat-value">${totalText}</div>
-            </div>
-        </div>
-        ${note}
-        <div class="modal-section-title">Top 10 values (by match count)</div>
-        ${topValuesHtml}
+    const docHtml = `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Report Summary</title>
+            <style>
+                :root {
+                    color-scheme: light;
+                    --bg: #f8fafc;
+                    --panel: #ffffff;
+                    --ink: #0f172a;
+                    --muted: #64748b;
+                    --border: #e2e8f0;
+                    --shadow: 0 24px 60px rgba(15, 23, 42, 0.12);
+                }
+                * { box-sizing: border-box; }
+                body {
+                    margin: 0;
+                    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+                    background: var(--bg);
+                    color: var(--ink);
+                }
+                main {
+                    max-width: 980px;
+                    margin: 32px auto;
+                    padding: 0 20px 40px;
+                }
+                header {
+                    background: var(--panel);
+                    border: 1px solid var(--border);
+                    border-radius: 18px;
+                    padding: 22px 26px;
+                    box-shadow: var(--shadow);
+                }
+                h1 { margin: 0 0 8px; font-size: 1.6rem; }
+                .meta { color: var(--muted); font-size: 0.95rem; }
+                .grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                    gap: 16px;
+                    margin-top: 18px;
+                }
+                .stat {
+                    background: var(--panel);
+                    border: 1px solid var(--border);
+                    border-radius: 16px;
+                    padding: 16px;
+                    box-shadow: var(--shadow);
+                }
+                .stat-label {
+                    font-size: 0.72rem;
+                    text-transform: uppercase;
+                    letter-spacing: 0.08em;
+                    color: var(--muted);
+                }
+                .stat-value {
+                    margin-top: 8px;
+                    font-size: 1.6rem;
+                    font-weight: 600;
+                }
+                section {
+                    margin-top: 24px;
+                    background: var(--panel);
+                    border: 1px solid var(--border);
+                    border-radius: 18px;
+                    padding: 20px 22px;
+                    box-shadow: var(--shadow);
+                }
+                h2 { margin: 0 0 12px; font-size: 1.1rem; }
+                .muted { color: var(--muted); font-size: 0.95rem; }
+                .list-item {
+                    border: 1px solid var(--border);
+                    border-radius: 12px;
+                    padding: 10px 12px;
+                    margin-bottom: 10px;
+                    background: #f8fafc;
+                }
+                .list-title { font-weight: 600; }
+                .list-meta { font-size: 0.85rem; color: var(--muted); }
+            </style>
+        </head>
+        <body>
+            <main>
+                <header>
+                    <h1>Report Summary</h1>
+                    <div class="meta">${escapeHtml(metaText)}</div>
+                </header>
+                <div class="grid">
+                    <div class="stat">
+                        <div class="stat-label">Matched workloads</div>
+                        <div class="stat-value">${matchedText}</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Not matched workloads</div>
+                        <div class="stat-value">${notMatchedText}</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Skipped workloads</div>
+                        <div class="stat-value">${errorText}</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Total workloads</div>
+                        <div class="stat-value">${totalText}</div>
+                    </div>
+                </div>
+                <section>
+                    ${note}
+                    <h2>Top 10 values (by match count)</h2>
+                    ${topValuesHtml}
+                </section>
+            </main>
+        </body>
+        </html>
     `;
 
-    reportSummaryModal.classList.add('is-visible');
-    reportSummaryModal.setAttribute('aria-hidden', 'false');
-    updateModalBodyState();
+    const newTab = window.open('', '_blank', 'noopener,noreferrer');
+    if (!newTab) {
+        setReportStatus('Popup blocked. Allow popups to open the summary tab.', 'error');
+        return;
+    }
+    newTab.document.open();
+    newTab.document.write(docHtml);
+    newTab.document.close();
 }
 
 // Scale workload
