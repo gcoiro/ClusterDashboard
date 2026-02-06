@@ -3878,7 +3878,17 @@ function isWorkloadFlaggedByMatches(namespace, workloadName, matches) {
             allJustified = false;
         }
     });
-    return anyMigration || allJustified;
+    if (anyMigration || allJustified) {
+        return true;
+    }
+    if (!reportResults) {
+        return false;
+    }
+    return matches.some(match => {
+        const matchId = getReportMatchId(namespace, workloadName, match);
+        const keyCard = reportResults.querySelector(`.report-key[data-match-id="${matchId}"]`);
+        return Boolean(keyCard?.classList.contains('is-justified') || keyCard?.classList.contains('is-migration'));
+    });
 }
 
 function collectMatchedTargetsWithFlags() {
@@ -4127,8 +4137,9 @@ async function applySpringConfigAgentToAllApps(buttonEl) {
     if (flaggedTargets.length) {
         const includeFlagged = confirm(
             `There are ${flaggedTargets.length} application(s) already marked Justified or Migration required.\n\n` +
-            `OK = include them (apply to ${targets.length} total)\n` +
-            `Cancel = skip them (apply to ${targets.length - flaggedTargets.length} total)`,
+            `Apply to those flagged apps too?\n` +
+            `OK = yes (apply to ${targets.length} total)\n` +
+            `Cancel = no (apply to ${targets.length - flaggedTargets.length} total)`,
         );
         if (!includeFlagged) {
             targets = rawTargets.filter(target => !target.isFlagged);
