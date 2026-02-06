@@ -3530,6 +3530,47 @@ function updateReportDataForWorkload(targetData, workloadName, workloadResult) {
     }
 }
 
+function markReportWorkloadApplied(namespace, workloadName, workloadKind) {
+    if (!reportResultsState || !namespace || !workloadName) {
+        return;
+    }
+
+    const markAppliedOnData = (data) => {
+        if (!data) {
+            return;
+        }
+        const matched = data.matched || [];
+        matched.forEach(item => {
+            if (item.workloadName === workloadName) {
+                item.agentApplied = true;
+            }
+        });
+
+        const errors = data.errors || [];
+        errors.forEach(err => {
+            if (err.workloadName === workloadName && (!workloadKind || err.workloadKind === workloadKind)) {
+                err.agentApplied = true;
+            }
+        });
+    };
+
+    if (reportResultsState.mode === 'single') {
+        if (reportResultsState.data?.namespace !== namespace) {
+            return;
+        }
+        markAppliedOnData(reportResultsState.data);
+        return;
+    }
+
+    if (reportResultsState.mode === 'multi') {
+        const targetReport = reportResultsState.reports.find(report => report.namespace === namespace);
+        if (!targetReport) {
+            return;
+        }
+        markAppliedOnData(targetReport.data);
+    }
+}
+
 function applyWorkloadReportUpdate(namespace, workloadName, workloadResult) {
     if (!reportResultsState) {
         return;
@@ -3665,6 +3706,7 @@ async function applySpringConfigAgent(namespace, workloadName, workloadKind, but
         if (error) {
             setInlineStatus(statusEl, error, 'error');
             setReportStatus(error, 'error');
+            markReportWorkloadApplied(namespace, workloadName, workloadKind);
         } else if (matchedItem && reportResultsState) {
             applyWorkloadReportUpdate(namespace, workloadName, {
                 matched: [matchedItem],
@@ -3672,10 +3714,12 @@ async function applySpringConfigAgent(namespace, workloadName, workloadKind, but
             });
             setInlineStatus(statusEl, `Report matched ${matchedItem.matches.length} key(s).`, 'success');
             setReportStatus(`Report matched ${matchedItem.matches.length} key(s) for ${workloadName}.`, 'success');
+            markReportWorkloadApplied(namespace, workloadName, workloadKind);
         } else if (!matchedItem) {
             applyWorkloadReportUpdate(namespace, workloadName, { matched: [], errors: [] });
             setInlineStatus(statusEl, 'No matching keys for the current pattern.', 'info');
             setReportStatus(`No matching keys for ${workloadName}.`, 'info');
+            markReportWorkloadApplied(namespace, workloadName, workloadKind);
         }
 
         if (buttonEl) {
@@ -3750,6 +3794,9 @@ function collectReportTargets({ namespaceFilter, includeMatched, includeErrors }
                 if (!workloadName) {
                     return;
                 }
+                if (item.agentApplied) {
+                    return;
+                }
                 const workloadKind = item.workloadKind || '';
                 const key = `${namespace}||${workloadName}||${workloadKind}`;
                 if (seen.has(key)) {
@@ -3763,6 +3810,9 @@ function collectReportTargets({ namespaceFilter, includeMatched, includeErrors }
         if (includeErrors) {
             (entry.data.errors || []).forEach(err => {
                 if (!err || !err.workloadName || err.workloadKind === 'namespace') {
+                    return;
+                }
+                if (err.agentApplied) {
                     return;
                 }
                 const workloadName = err.workloadName || '';
