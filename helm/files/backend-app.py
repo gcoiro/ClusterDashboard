@@ -462,11 +462,17 @@ def wait_for_pod_running(namespace: str, pod_name: str, timeout_seconds=60):
     return run_oc(["get", "pod", pod_name, "-n", namespace, "-o", "json"], expect_json=True)
 
 
-def build_debug_pod_manifest(namespace: str, source_pod_name: str, debug_pod_name: str, image: str) -> dict:
+def build_debug_pod_manifest(
+    namespace: str,
+    workload_kind: str,
+    workload_name: str,
+    debug_pod_name: str,
+    image: str,
+) -> dict:
     debug_spec = run_oc(
         [
             "debug",
-            f"pod/{source_pod_name}",
+            f"{workload_kind}/{workload_name}",
             "-n",
             namespace,
             "--image",
@@ -1415,49 +1421,27 @@ async def apply_spring_config_agent(
                 f"Workload '{workloadName}' not found in namespace '{namespace}'",
             )
 
-    fallback_labels = workload.get("spec", {}).get("template", {}).get("metadata", {}).get("labels", {})
-    label_selector = get_workload_selector(workload, fallback_labels)
-    if not label_selector:
-        raise_structured_error(
-            404,
-            "no_label_selector",
-            f"No label selector found for workload '{workloadName}'",
-        )
-
-    pod_data = run_oc(["get", "pods", "-n", namespace, "-l", label_selector, "-o", "json"], expect_json=True)
-    target_pod = select_target_pod(pod_data.get("items", []))
-    if not target_pod:
-        raise_structured_error(
-            404,
-            "pod_not_found",
-            f"No pods found for workload '{workloadName}'",
-        )
-    target_pod_name = target_pod.get("metadata", {}).get("name", "")
-    if not target_pod_name:
-        raise_structured_error(
-            500,
-            "pod_name_missing",
-            f"Failed to determine pod name for workload '{workloadName}'",
-        )
-    containers = target_pod.get("spec", {}).get("containers", []) or []
+    template = workload.get("spec", {}).get("template", {}) or {}
+    containers = template.get("spec", {}).get("containers", []) or []
     target_image = containers[0].get("image") if containers else ""
     if not target_image:
         raise_structured_error(
             500,
-            "pod_image_missing",
-            f"Failed to determine image for pod '{target_pod_name}'",
+            "workload_image_missing",
+            f"Failed to determine image for workload '{workloadName}'",
         )
 
     timestamp = int(time.time())
-    base_name = f"{target_pod_name}-spring-config-debug"
+    base_name = f"{workloadName}-spring-config-debug"
     if len(base_name) > 50:
         base_name = base_name[:50].rstrip("-")
     debug_pod_name = f"{base_name}-{timestamp}"
 
     logger.info(
-        "Creating debug pod %s from %s using image %s",
+        "Creating debug pod %s from %s/%s using image %s",
         debug_pod_name,
-        target_pod_name,
+        workload_kind,
+        workloadName,
         target_image,
     )
 
@@ -1465,7 +1449,8 @@ async def apply_spring_config_agent(
     try:
         debug_manifest = build_debug_pod_manifest(
             namespace,
-            target_pod_name,
+            workload_kind,
+            workloadName,
             debug_pod_name,
             target_image,
         )
