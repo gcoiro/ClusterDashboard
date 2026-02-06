@@ -4245,7 +4245,7 @@ function buildReportSummaryData() {
 
     const matchedWorkloads = new Set();
     const errorWorkloads = new Set();
-    const keyCounts = new Map();
+    const valueCounts = new Map();
     let totalWorkloads = 0;
     let totalKnown = true;
 
@@ -4259,11 +4259,11 @@ function buildReportSummaryData() {
                 matchedWorkloads.add(`${namespace}||${workloadName}||${workloadKind}`);
             }
             (workload.matches || []).forEach(match => {
-                const key = match.key || '';
-                if (!key) {
+                const value = match.value || '';
+                if (!value) {
                     return;
                 }
-                keyCounts.set(key, (keyCounts.get(key) || 0) + 1);
+                valueCounts.set(value, (valueCounts.get(value) || 0) + 1);
             });
         });
 
@@ -4283,9 +4283,9 @@ function buildReportSummaryData() {
         }
     });
 
-    const topKeys = Array.from(keyCounts.entries())
-        .map(([key, count]) => ({ key, count }))
-        .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))
+    const topValues = Array.from(valueCounts.entries())
+        .map(([value, count]) => ({ value, count }))
+        .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value))
         .slice(0, 10);
 
     const matchedCount = matchedWorkloads.size;
@@ -4301,7 +4301,7 @@ function buildReportSummaryData() {
         notMatchedCount,
         totalWorkloads: totalKnown ? totalWorkloads : null,
         totalKnown,
-        topKeys,
+        topValues,
     };
 }
 
@@ -4330,18 +4330,18 @@ function showReportSummaryModal() {
     const totalText = summary.totalKnown ? String(summary.totalWorkloads) : 'n/a';
     const notMatchedText = summary.totalKnown ? String(summary.notMatchedCount) : 'n/a';
 
-    const topKeysHtml = summary.topKeys.length
+    const topValuesHtml = summary.topValues.length
         ? `
             <div class="modal-list">
-                ${summary.topKeys.map(item => `
+                ${summary.topValues.map(item => `
                     <div class="modal-list-item">
-                        <div class="modal-list-title">${escapeHtml(item.key)}</div>
+                        <div class="modal-list-title">${escapeHtml(item.value)}</div>
                         <div class="modal-list-meta">${item.count} match${item.count === 1 ? '' : 'es'}</div>
                     </div>
                 `).join('')}
             </div>
         `
-        : '<div class="modal-muted">No keys matched in this report.</div>';
+        : '<div class="modal-muted">No values matched in this report.</div>';
 
     const note = summary.totalKnown
         ? ''
@@ -4367,8 +4367,8 @@ function showReportSummaryModal() {
             </div>
         </div>
         ${note}
-        <div class="modal-section-title">Top 10 keys (by match count)</div>
-        ${topKeysHtml}
+        <div class="modal-section-title">Top 10 values (by match count)</div>
+        ${topValuesHtml}
     `;
 
     reportSummaryModal.classList.add('is-visible');
