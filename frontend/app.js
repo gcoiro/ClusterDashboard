@@ -3873,6 +3873,47 @@ function resolveSkippedAgentButton(target) {
     return keyCard.querySelector('.btn-agent');
 }
 
+function collectSkippedTargetsForNamespace(namespace) {
+    const targets = [];
+    const flaggedTargets = [];
+    if (!reportResultsState || !namespace) {
+        return { targets, flaggedTargets };
+    }
+
+    const entries = getReportDataList(namespace);
+    entries.forEach(entry => {
+        if (entry.namespace !== namespace) {
+            return;
+        }
+        const errors = entry.data.errors || [];
+        errors.forEach(err => {
+            if (!err || !err.workloadName || err.workloadKind === 'namespace') {
+                return;
+            }
+            if (err.agentApplied) {
+                return;
+            }
+            const workloadKind = err.workloadKind || '';
+            const matchId = getSkippedMatchId(namespace, err.workloadName, workloadKind);
+            const stableId = getSkippedStableId(namespace, err.workloadName, workloadKind);
+            const annotation = getReportAnnotation(matchId, stableId);
+            const isFlagged = Boolean(annotation.justified || annotation.migrationRequired);
+            const target = {
+                namespace,
+                workloadName: err.workloadName,
+                workloadKind,
+                isFlagged,
+            };
+            targets.push(target);
+            if (isFlagged) {
+                flaggedTargets.push(target);
+            }
+        });
+    });
+
+    return { targets, flaggedTargets };
+}
+
 async function applySpringConfigAgentBulk(targets, options = {}) {
     const {
         scopeLabel = 'applications',
@@ -3988,11 +4029,20 @@ async function applySpringConfigAgentToSkippedNamespace(namespace, buttonEl) {
         return;
     }
 
-    const targets = collectReportTargets({
-        namespaceFilter: namespace,
-        includeMatched: false,
-        includeErrors: true,
-    });
+    const { targets: rawTargets, flaggedTargets } = collectSkippedTargetsForNamespace(namespace);
+    let targets = rawTargets;
+    if (flaggedTargets.length) {
+        const confirmInclude = confirm(
+            `There are ${flaggedTargets.length} skipped application(s) already marked Justified or Migration required. Include them in this run?`,
+        );
+        if (!confirmInclude) {
+            targets = rawTargets.filter(target => !target.isFlagged);
+        }
+    }
+    if (!targets.length) {
+        setReportStatus(`No skipped applications left to apply in ${namespace}.`, 'info');
+        return;
+    }
 
     await applySpringConfigAgentBulk(targets, {
         scopeLabel: `skipped applications in ${namespace}`,
