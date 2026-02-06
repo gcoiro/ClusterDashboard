@@ -67,9 +67,17 @@ const reportAppLegend = document.getElementById('report-app-legend');
 const reportAppChartTitle = document.getElementById('report-app-chart-title');
 const reportDrilldown = document.getElementById('report-drilldown');
 const reportResetView = document.getElementById('report-reset-view');
+const reportSummaryBtn = document.getElementById('report-summary');
 const namespaceScaleInput = document.getElementById('namespace-scale-input');
 const namespaceScaleBtn = document.getElementById('namespace-scale-btn');
 const namespaceScaleStatus = document.getElementById('namespace-scale-status');
+const agentFailureModal = document.getElementById('agent-failure-modal');
+const agentFailureTitle = document.getElementById('agent-failure-title');
+const agentFailureSummary = document.getElementById('agent-failure-summary');
+const agentFailureList = document.getElementById('agent-failure-list');
+const reportSummaryModal = document.getElementById('report-summary-modal');
+const reportSummaryMeta = document.getElementById('report-summary-meta');
+const reportSummaryBody = document.getElementById('report-summary-body');
 
 const REPORT_RETRY_LIMIT = 3;
 const REPORT_RETRY_DELAY_MS = 1000;
@@ -320,6 +328,41 @@ document.addEventListener('DOMContentLoaded', () => {
             resetReportDrilldown();
         });
     }
+
+    if (reportSummaryBtn) {
+        reportSummaryBtn.addEventListener('click', () => {
+            showReportSummaryModal();
+        });
+    }
+
+    if (agentFailureModal) {
+        agentFailureModal.addEventListener('click', (event) => {
+            const target = event.target.closest('[data-modal-close]');
+            if (target) {
+                closeAgentFailureModal();
+            }
+        });
+    }
+
+    if (reportSummaryModal) {
+        reportSummaryModal.addEventListener('click', (event) => {
+            const target = event.target.closest('[data-modal-close]');
+            if (target) {
+                closeReportSummaryModal();
+            }
+        });
+    }
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            if (reportSummaryModal && reportSummaryModal.classList.contains('is-visible')) {
+                closeReportSummaryModal();
+            }
+            if (agentFailureModal && agentFailureModal.classList.contains('is-visible')) {
+                closeAgentFailureModal();
+            }
+        }
+    });
 
     reportResults.addEventListener('click', (event) => {
         const target = getEventTargetElement(event);
@@ -2288,12 +2331,10 @@ async function downloadSpringConfigReport() {
         setReportStatus('Enter a regex pattern to search.', 'error');
         return;
     }
-    if (selectedNamespaces.length !== 1) {
-        setReportStatus('Select exactly one namespace to download a CSV.', 'error');
+    if (selectedNamespaces.length === 0) {
+        setReportStatus('Select at least one namespace to download a CSV.', 'error');
         return;
     }
-
-    const targetNamespace = selectedNamespaces[0];
 
     const caseInsensitive = reportCase.checked;
     const searchIn = reportScope.value || 'value';
@@ -2305,32 +2346,58 @@ async function downloadSpringConfigReport() {
 
     setReportStatus('Preparing CSV download...', 'info');
 
-    if (reportResultsState && reportResultsState.mode === 'single') {
-        const reportData = reportResultsState.data;
-        if (reportData && reportData.namespace === targetNamespace) {
-            const csvContent = buildReportCsv(reportData);
-            triggerCsvDownload(csvContent, `spring-config-report-${targetNamespace}.csv`);
+    try {
+        if (selectedNamespaces.length === 1) {
+            const targetNamespace = selectedNamespaces[0];
+            if (reportResultsState && reportResultsState.mode === 'single') {
+                const reportData = reportResultsState.data;
+                if (reportData && reportData.namespace === targetNamespace) {
+                    const csvContent = buildReportCsv(reportData);
+                    triggerCsvDownload(csvContent, `spring-config-report-${targetNamespace}.csv`);
+                    setReportStatus('CSV downloaded.', 'success');
+                    return;
+                }
+            }
+
+            const response = await fetch(`${API_BASE_URL}/config/${targetNamespace}/report.csv?${query.toString()}`);
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || 'Failed to download report');
+            }
+
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `spring-config-report-${targetNamespace}.csv`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(url);
             setReportStatus('CSV downloaded.', 'success');
             return;
         }
-    }
 
-    try {
-        const response = await fetch(`${API_BASE_URL}/config/${targetNamespace}/report.csv?${query.toString()}`);
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.detail || 'Failed to download report');
+        const reports = [];
+        for (const namespace of selectedNamespaces) {
+            const fromState = getReportDataForNamespace(namespace);
+            if (fromState) {
+                reports.push({ namespace, data: fromState });
+                continue;
+            }
+
+            const response = await fetch(`${API_BASE_URL}/config/${namespace}/report?${query.toString()}`);
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.detail || `Failed to fetch report for ${namespace}`);
+            }
+            const data = await response.json();
+            reports.push({ namespace, data });
         }
 
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `spring-config-report-${targetNamespace}.csv`;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        URL.revokeObjectURL(url);
+        const csvContent = buildReportCsvForReports(reports);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        triggerCsvDownload(csvContent, `spring-config-report-multi-${timestamp}.csv`);
         setReportStatus('CSV downloaded.', 'success');
     } catch (error) {
         console.error('Error downloading config report:', error);
@@ -2526,9 +2593,11 @@ function toBase64(value) {
     return btoa(unescape(encodeURIComponent(value)));
 }
 
-function buildReportCsv(reportData) {
+function buildReportCsv(reportData, options = {}) {
+    const includeNamespace = Boolean(options.includeNamespace);
     const rows = [];
     rows.push([
+        ...(includeNamespace ? ['namespace'] : []),
         'workloadName',
         'workloadKind',
         'key',
@@ -2540,7 +2609,34 @@ function buildReportCsv(reportData) {
         'comment',
     ]);
 
-    const namespace = reportData.namespace || '';
+    appendReportCsvRows(rows, reportData, includeNamespace);
+    return rows.map(row => row.map(escapeCsvValue).join(',')).join('\n');
+}
+
+function buildReportCsvForReports(reports) {
+    const rows = [];
+    rows.push([
+        'namespace',
+        'workloadName',
+        'workloadKind',
+        'key',
+        'value',
+        'source',
+        'matchOn',
+        'justified',
+        'migrationRequired',
+        'comment',
+    ]);
+
+    (reports || []).forEach(report => {
+        appendReportCsvRows(rows, report?.data || {}, true, report?.namespace);
+    });
+
+    return rows.map(row => row.map(escapeCsvValue).join(',')).join('\n');
+}
+
+function appendReportCsvRows(rows, reportData, includeNamespace, namespaceOverride) {
+    const namespace = namespaceOverride || reportData.namespace || '';
     const matched = reportData.matched || [];
     matched.forEach(workload => {
         const workloadName = workload.workloadName || '';
@@ -2549,6 +2645,7 @@ function buildReportCsv(reportData) {
             const matchId = getReportMatchId(namespace, workloadName, match);
             const annotation = getReportAnnotation(matchId);
             rows.push([
+                ...(includeNamespace ? [namespace] : []),
                 workloadName,
                 workloadKind,
                 match.key || '',
@@ -2561,8 +2658,6 @@ function buildReportCsv(reportData) {
             ]);
         });
     });
-
-    return rows.map(row => row.map(escapeCsvValue).join(',')).join('\n');
 }
 
 function escapeCsvValue(value) {
@@ -3514,11 +3609,18 @@ async function exposeActuatorEnv(namespace, workloadName, workloadKind, buttonEl
 async function applySpringConfigAgent(namespace, workloadName, workloadKind, buttonEl) {
     if (!namespace || !workloadName) {
         setReportStatus('Missing namespace or workload name.', 'error');
-        return false;
+        return {
+            ok: false,
+            namespace,
+            workloadName,
+            workloadKind,
+            errorMessage: 'Missing namespace or workload name.',
+        };
     }
 
     const kindLabel = workloadKind || 'workload';
     let success = false;
+    let errorMessage = '';
     if (buttonEl) {
         buttonEl.disabled = true;
         buttonEl.classList.remove('is-success', 'is-error');
@@ -3583,9 +3685,9 @@ async function applySpringConfigAgent(namespace, workloadName, workloadKind, but
         success = true;
     } catch (error) {
         console.error('Error applying Spring Config Agent:', error);
-        const message = `Error: ${error.message}`;
-        setReportStatus(message, 'error');
-        setInlineStatus(statusEl, message, 'error');
+        errorMessage = `Error: ${error.message}`;
+        setReportStatus(errorMessage, 'error');
+        setInlineStatus(statusEl, errorMessage, 'error');
         if (buttonEl) {
             buttonEl.textContent = 'Apply Spring Config Agent';
             buttonEl.classList.add('is-error');
@@ -3596,7 +3698,13 @@ async function applySpringConfigAgent(namespace, workloadName, workloadKind, but
             buttonEl.disabled = false;
         }
     }
-    return success;
+    return {
+        ok: success,
+        namespace,
+        workloadName,
+        workloadKind,
+        errorMessage,
+    };
 }
 
 function getReportDataList(namespaceFilter) {
@@ -3690,6 +3798,8 @@ async function applySpringConfigAgentBulk(targets, options = {}) {
         confirmMessage,
         buttonResolver,
         triggerButton,
+        showFailureModal = false,
+        failureTitle,
     } = options;
 
     if (!targets.length) {
@@ -3705,10 +3815,14 @@ async function applySpringConfigAgentBulk(targets, options = {}) {
     if (triggerButton) {
         triggerButton.disabled = true;
     }
+    if (showFailureModal) {
+        closeAgentFailureModal();
+    }
 
     const batchSize = 10;
     let successCount = 0;
     let failureCount = 0;
+    const failures = [];
 
     for (let start = 0; start < targets.length; start += batchSize) {
         const batch = targets.slice(start, start + batchSize);
@@ -3721,21 +3835,28 @@ async function applySpringConfigAgentBulk(targets, options = {}) {
             'info',
         );
 
-        const results = await Promise.all(batch.map(target => {
+        const results = await Promise.all(batch.map(async target => {
             const buttonEl = buttonResolver ? buttonResolver(target) : null;
-            return applySpringConfigAgent(
+            const result = await applySpringConfigAgent(
                 target.namespace,
                 target.workloadName,
                 target.workloadKind,
                 buttonEl,
             );
+            return { target, result };
         }));
 
-        results.forEach(ok => {
-            if (ok) {
+        results.forEach(({ target, result }) => {
+            if (result && result.ok) {
                 successCount += 1;
             } else {
                 failureCount += 1;
+                failures.push({
+                    namespace: target.namespace,
+                    workloadName: target.workloadName,
+                    workloadKind: target.workloadKind,
+                    errorMessage: result?.errorMessage || 'Failed to apply Spring Config Agent.',
+                });
             }
         });
     }
@@ -3745,6 +3866,12 @@ async function applySpringConfigAgentBulk(targets, options = {}) {
             `Applied Spring Config Agent to ${successCount}/${targets.length} ${scopeLabel}. ${failureCount} failed.`,
             'error',
         );
+        if (showFailureModal) {
+            showAgentFailureModal(failures, {
+                title: failureTitle,
+                scopeLabel,
+            });
+        }
     } else {
         setReportStatus(`Applied Spring Config Agent to ${successCount} ${scopeLabel}.`, 'success');
     }
@@ -3790,6 +3917,8 @@ async function applySpringConfigAgentToAllApps(buttonEl) {
         scopeLabel: 'spring applications',
         confirmMessage: `Apply Spring Config Agent to ${targets.length} spring application(s) across all namespaces?`,
         triggerButton: buttonEl,
+        showFailureModal: true,
+        failureTitle: 'Agent apply failures',
     });
 }
 
@@ -3961,6 +4090,240 @@ function setInlineStatus(statusEl, message, statusType) {
     if (statusType) {
         statusEl.classList.add(`is-${statusType}`);
     }
+}
+
+function updateModalBodyState() {
+    const anyOpen = [agentFailureModal, reportSummaryModal]
+        .filter(Boolean)
+        .some(modal => modal.classList.contains('is-visible'));
+    document.body.classList.toggle('is-modal-open', anyOpen);
+}
+
+function closeAgentFailureModal() {
+    if (!agentFailureModal) {
+        return;
+    }
+    agentFailureModal.classList.remove('is-visible');
+    agentFailureModal.setAttribute('aria-hidden', 'true');
+    updateModalBodyState();
+}
+
+function showAgentFailureModal(failures, options = {}) {
+    if (!agentFailureModal) {
+        return;
+    }
+
+    const failureCount = failures.length;
+    const title = options.title || 'Agent apply failures';
+    const scopeLabel = options.scopeLabel || 'applications';
+    const summary = `Failed to apply Spring Config Agent to ${failureCount} ${scopeLabel}.`;
+
+    if (agentFailureTitle) {
+        agentFailureTitle.textContent = title;
+    }
+    if (agentFailureSummary) {
+        agentFailureSummary.textContent = summary;
+    }
+    if (agentFailureList) {
+        agentFailureList.innerHTML = failures.map(failure => {
+            const namespace = escapeHtml(failure.namespace || 'unknown-namespace');
+            const workloadName = escapeHtml(failure.workloadName || 'unknown-app');
+            const workloadKind = escapeHtml(failure.workloadKind || 'workload');
+            const reason = escapeHtml(failure.errorMessage || 'Failed to apply Spring Config Agent.');
+            return `
+                <div class="modal-list-item">
+                    <div class="modal-list-title">${namespace}/${workloadName}</div>
+                    <div class="modal-list-meta">${workloadKind}</div>
+                    <div class="modal-list-reason">${reason}</div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    agentFailureModal.classList.add('is-visible');
+    agentFailureModal.setAttribute('aria-hidden', 'false');
+    updateModalBodyState();
+}
+
+function closeReportSummaryModal() {
+    if (!reportSummaryModal) {
+        return;
+    }
+    reportSummaryModal.classList.remove('is-visible');
+    reportSummaryModal.setAttribute('aria-hidden', 'true');
+    updateModalBodyState();
+}
+
+function extractWorkloadTotal(reportData) {
+    if (!reportData) {
+        return null;
+    }
+    const candidates = [
+        'totalWorkloads',
+        'workloadCount',
+        'total',
+        'scannedWorkloads',
+        'workloadsScanned',
+        'workloadTotal',
+    ];
+    for (const key of candidates) {
+        const value = Number(reportData[key]);
+        if (Number.isFinite(value)) {
+            return value;
+        }
+    }
+    if (Array.isArray(reportData.workloads)) {
+        return reportData.workloads.length;
+    }
+    if (Array.isArray(reportData.apps)) {
+        return reportData.apps.length;
+    }
+    return null;
+}
+
+function buildReportSummaryData() {
+    if (!reportResultsState) {
+        return null;
+    }
+    const reports = reportResultsState.mode === 'single'
+        ? [{ namespace: reportResultsState.data?.namespace || currentNamespace, data: reportResultsState.data || {} }]
+        : (reportResultsState.reports || []);
+
+    if (!reports.length) {
+        return null;
+    }
+
+    const matchedWorkloads = new Set();
+    const errorWorkloads = new Set();
+    const keyCounts = new Map();
+    let totalWorkloads = 0;
+    let totalKnown = true;
+
+    reports.forEach(report => {
+        const namespace = report.namespace || '';
+        const data = report.data || {};
+        (data.matched || []).forEach(workload => {
+            const workloadName = workload.workloadName || '';
+            const workloadKind = workload.workloadKind || '';
+            if (workloadName) {
+                matchedWorkloads.add(`${namespace}||${workloadName}||${workloadKind}`);
+            }
+            (workload.matches || []).forEach(match => {
+                const key = match.key || '';
+                if (!key) {
+                    return;
+                }
+                keyCounts.set(key, (keyCounts.get(key) || 0) + 1);
+            });
+        });
+
+        (data.errors || []).forEach(error => {
+            if (!error || !error.workloadName || error.workloadKind === 'namespace') {
+                return;
+            }
+            const workloadKind = error.workloadKind || '';
+            errorWorkloads.add(`${namespace}||${error.workloadName}||${workloadKind}`);
+        });
+
+        const reportTotal = extractWorkloadTotal(data);
+        if (Number.isFinite(reportTotal)) {
+            totalWorkloads += reportTotal;
+        } else {
+            totalKnown = false;
+        }
+    });
+
+    const topKeys = Array.from(keyCounts.entries())
+        .map(([key, count]) => ({ key, count }))
+        .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))
+        .slice(0, 10);
+
+    const matchedCount = matchedWorkloads.size;
+    const errorCount = errorWorkloads.size;
+    const notMatchedCount = totalKnown
+        ? Math.max(0, totalWorkloads - matchedCount - errorCount)
+        : null;
+
+    return {
+        namespaceCount: reports.length,
+        matchedCount,
+        errorCount,
+        notMatchedCount,
+        totalWorkloads: totalKnown ? totalWorkloads : null,
+        totalKnown,
+        topKeys,
+    };
+}
+
+function showReportSummaryModal() {
+    if (!reportResultsState) {
+        setReportStatus('Run a report before opening the summary.', 'error');
+        return;
+    }
+    if (!reportSummaryModal || !reportSummaryBody || !reportSummaryMeta) {
+        return;
+    }
+
+    const summary = buildReportSummaryData();
+    if (!summary) {
+        setReportStatus('No report data available.', 'error');
+        return;
+    }
+
+    const pattern = reportPattern.value.trim() || 'n/a';
+    const scopeLabel = reportScope.value || 'value';
+    const caseLabel = reportCase.checked ? 'insensitive' : 'sensitive';
+    reportSummaryMeta.textContent = `Pattern: ${pattern} | Scope: ${scopeLabel} | Case: ${caseLabel} | Namespaces: ${summary.namespaceCount}`;
+
+    const matchedText = String(summary.matchedCount);
+    const errorText = String(summary.errorCount);
+    const totalText = summary.totalKnown ? String(summary.totalWorkloads) : 'n/a';
+    const notMatchedText = summary.totalKnown ? String(summary.notMatchedCount) : 'n/a';
+
+    const topKeysHtml = summary.topKeys.length
+        ? `
+            <div class="modal-list">
+                ${summary.topKeys.map(item => `
+                    <div class="modal-list-item">
+                        <div class="modal-list-title">${escapeHtml(item.key)}</div>
+                        <div class="modal-list-meta">${item.count} match${item.count === 1 ? '' : 'es'}</div>
+                    </div>
+                `).join('')}
+            </div>
+        `
+        : '<div class="modal-muted">No keys matched in this report.</div>';
+
+    const note = summary.totalKnown
+        ? ''
+        : '<div class="modal-muted">Total workload count is not available from the API, so "Not matched" is shown as n/a.</div>';
+
+    reportSummaryBody.innerHTML = `
+        <div class="modal-summary-grid">
+            <div class="modal-stat">
+                <div class="modal-stat-label">Matched workloads</div>
+                <div class="modal-stat-value">${matchedText}</div>
+            </div>
+            <div class="modal-stat">
+                <div class="modal-stat-label">Not matched workloads</div>
+                <div class="modal-stat-value">${notMatchedText}</div>
+            </div>
+            <div class="modal-stat">
+                <div class="modal-stat-label">Skipped workloads</div>
+                <div class="modal-stat-value">${errorText}</div>
+            </div>
+            <div class="modal-stat">
+                <div class="modal-stat-label">Total workloads</div>
+                <div class="modal-stat-value">${totalText}</div>
+            </div>
+        </div>
+        ${note}
+        <div class="modal-section-title">Top 10 keys (by match count)</div>
+        ${topKeysHtml}
+    `;
+
+    reportSummaryModal.classList.add('is-visible');
+    reportSummaryModal.setAttribute('aria-hidden', 'false');
+    updateModalBodyState();
 }
 
 // Scale workload

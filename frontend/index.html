@@ -51,6 +51,7 @@
                         <button id="report-load" class="btn btn-secondary">Load report</button>
                         <input id="report-load-input" class="report-file-input" type="file" accept="application/json">
                         <button id="report-download" class="btn btn-secondary report-postrun">Download report</button>
+                        <button id="report-summary" class="btn btn-secondary report-postrun">Summary</button>
                         <button id="report-apply-agent-all" class="btn btn-secondary report-postrun">Apply agent to all apps</button>
                         <button id="report-select-keys" class="btn btn-secondary report-postrun">Select all keys</button>
                         <button id="report-clear-selection" class="btn btn-secondary report-postrun">Clear selection</button>
@@ -200,6 +201,32 @@
     </div>
 
     <div class="app-version">v2.6.7</div>
+
+    <div id="agent-failure-modal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
+        <div class="modal-backdrop" data-modal-close="true"></div>
+        <div class="modal-card" role="document">
+            <div class="modal-header">
+                <h3 id="agent-failure-title">Agent apply failures</h3>
+                <button type="button" class="btn btn-secondary modal-close" data-modal-close="true">Close</button>
+            </div>
+            <div id="agent-failure-summary" class="modal-summary"></div>
+            <div id="agent-failure-list" class="modal-list"></div>
+        </div>
+    </div>
+
+    <div id="report-summary-modal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
+        <div class="modal-backdrop" data-modal-close="true"></div>
+        <div class="modal-card" role="document">
+            <div class="modal-header">
+                <div>
+                    <h3 id="report-summary-title">Report summary</h3>
+                    <div id="report-summary-meta" class="modal-summary"></div>
+                </div>
+                <button type="button" class="btn btn-secondary modal-close" data-modal-close="true">Close</button>
+            </div>
+            <div id="report-summary-body"></div>
+        </div>
+    </div>
 
     <script src="app.js"></script>
 </body>
