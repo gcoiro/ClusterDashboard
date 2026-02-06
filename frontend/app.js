@@ -3897,7 +3897,15 @@ function collectSkippedTargetsForNamespace(namespace) {
             const matchId = getSkippedMatchId(namespace, err.workloadName, workloadKind);
             const stableId = getSkippedStableId(namespace, err.workloadName, workloadKind);
             const annotation = getReportAnnotation(matchId, stableId);
-            const isFlagged = Boolean(annotation.justified || annotation.migrationRequired);
+            const keyCard = reportResults
+                ? reportResults.querySelector(`.report-key[data-match-id="${matchId}"]`)
+                : null;
+            const isFlagged = Boolean(
+                annotation.justified ||
+                annotation.migrationRequired ||
+                keyCard?.classList.contains('is-justified') ||
+                keyCard?.classList.contains('is-migration'),
+            );
             const target = {
                 namespace,
                 workloadName: err.workloadName,
@@ -4640,12 +4648,17 @@ function openReportSummaryTab() {
         </html>
     `;
 
-    const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(docHtml)}`;
-    const newTab = window.open(dataUrl, '_blank');
+    const blob = new Blob([docHtml], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const newTab = window.open(url, '_blank');
     if (!newTab) {
         setReportStatus('Popup blocked. Allow popups to open the summary tab.', 'error');
+        URL.revokeObjectURL(url);
         return;
     }
+    setTimeout(() => {
+        URL.revokeObjectURL(url);
+    }, 60000);
 }
 
 // Scale workload
