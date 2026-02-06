@@ -75,6 +75,11 @@ const agentFailureModal = document.getElementById('agent-failure-modal');
 const agentFailureTitle = document.getElementById('agent-failure-title');
 const agentFailureSummary = document.getElementById('agent-failure-summary');
 const agentFailureList = document.getElementById('agent-failure-list');
+const agentApplySummaryModal = document.getElementById('agent-apply-summary-modal');
+const agentApplySummaryTitle = document.getElementById('agent-apply-summary-title');
+const agentApplySummaryMeta = document.getElementById('agent-apply-summary-meta');
+const agentApplySummarySuccess = document.getElementById('agent-apply-summary-success');
+const agentApplySummaryFailures = document.getElementById('agent-apply-summary-failures');
 const reportSummaryModal = document.getElementById('report-summary-modal');
 const reportSummaryMeta = document.getElementById('report-summary-meta');
 const reportSummaryBody = document.getElementById('report-summary-body');
@@ -344,6 +349,15 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    if (agentApplySummaryModal) {
+        agentApplySummaryModal.addEventListener('click', (event) => {
+            const target = event.target.closest('[data-modal-close]');
+            if (target) {
+                closeAgentApplySummaryModal();
+            }
+        });
+    }
+
     if (reportSummaryModal) {
         reportSummaryModal.addEventListener('click', (event) => {
             const target = event.target.closest('[data-modal-close]');
@@ -360,6 +374,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (agentFailureModal && agentFailureModal.classList.contains('is-visible')) {
                 closeAgentFailureModal();
+            }
+            if (agentApplySummaryModal && agentApplySummaryModal.classList.contains('is-visible')) {
+                closeAgentApplySummaryModal();
             }
         }
     });
@@ -3850,6 +3867,7 @@ async function applySpringConfigAgentBulk(targets, options = {}) {
         triggerButton,
         showFailureModal = false,
         failureTitle,
+        showSummaryModal = false,
     } = options;
 
     if (!targets.length) {
@@ -3868,10 +3886,14 @@ async function applySpringConfigAgentBulk(targets, options = {}) {
     if (showFailureModal) {
         closeAgentFailureModal();
     }
+    if (showSummaryModal) {
+        closeAgentApplySummaryModal();
+    }
 
     const batchSize = 10;
     let successCount = 0;
     let failureCount = 0;
+    const successes = [];
     const failures = [];
 
     for (let start = 0; start < targets.length; start += batchSize) {
@@ -3899,6 +3921,11 @@ async function applySpringConfigAgentBulk(targets, options = {}) {
         results.forEach(({ target, result }) => {
             if (result && result.ok) {
                 successCount += 1;
+                successes.push({
+                    namespace: target.namespace,
+                    workloadName: target.workloadName,
+                    workloadKind: target.workloadKind,
+                });
             } else {
                 failureCount += 1;
                 failures.push({
@@ -3908,6 +3935,15 @@ async function applySpringConfigAgentBulk(targets, options = {}) {
                     errorMessage: result?.errorMessage || 'Failed to apply Spring Config Agent.',
                 });
             }
+        });
+    }
+
+    if (showSummaryModal) {
+        showAgentApplySummaryModal({
+            successes,
+            failures,
+            scopeLabel,
+            title: 'Agent apply summary',
         });
     }
 
@@ -3967,8 +4003,9 @@ async function applySpringConfigAgentToAllApps(buttonEl) {
         scopeLabel: 'spring applications',
         confirmMessage: `Apply Spring Config Agent to ${targets.length} spring application(s) across all namespaces?`,
         triggerButton: buttonEl,
-        showFailureModal: true,
+        showFailureModal: false,
         failureTitle: 'Agent apply failures',
+        showSummaryModal: true,
     });
 }
 
@@ -4143,7 +4180,7 @@ function setInlineStatus(statusEl, message, statusType) {
 }
 
 function updateModalBodyState() {
-    const anyOpen = [agentFailureModal, reportSummaryModal]
+    const anyOpen = [agentFailureModal, agentApplySummaryModal, reportSummaryModal]
         .filter(Boolean)
         .some(modal => modal.classList.contains('is-visible'));
     document.body.classList.toggle('is-modal-open', anyOpen);
@@ -4192,6 +4229,93 @@ function showAgentFailureModal(failures, options = {}) {
 
     agentFailureModal.classList.add('is-visible');
     agentFailureModal.setAttribute('aria-hidden', 'false');
+    updateModalBodyState();
+}
+
+function closeAgentApplySummaryModal() {
+    if (!agentApplySummaryModal) {
+        return;
+    }
+    agentApplySummaryModal.classList.remove('is-visible');
+    agentApplySummaryModal.setAttribute('aria-hidden', 'true');
+    updateModalBodyState();
+}
+
+function showAgentApplySummaryModal(data) {
+    if (!agentApplySummaryModal) {
+        return;
+    }
+
+    closeAgentFailureModal();
+
+    const successes = Array.isArray(data?.successes) ? data.successes : [];
+    const failures = Array.isArray(data?.failures) ? data.failures : [];
+    const scopeLabel = data?.scopeLabel || 'applications';
+    const totalCount = successes.length + failures.length;
+
+    if (agentApplySummaryTitle) {
+        agentApplySummaryTitle.textContent = data?.title || 'Agent apply summary';
+    }
+
+    if (agentApplySummaryMeta) {
+        agentApplySummaryMeta.innerHTML = `
+            <div class="modal-summary-grid">
+                <div class="modal-stat">
+                    <div class="modal-stat-label">Total ${escapeHtml(scopeLabel)}</div>
+                    <div class="modal-stat-value">${totalCount}</div>
+                </div>
+                <div class="modal-stat">
+                    <div class="modal-stat-label">Applied</div>
+                    <div class="modal-stat-value">${successes.length}</div>
+                </div>
+                <div class="modal-stat">
+                    <div class="modal-stat-label">Failed</div>
+                    <div class="modal-stat-value">${failures.length}</div>
+                </div>
+            </div>
+        `;
+    }
+
+    if (agentApplySummarySuccess) {
+        if (successes.length) {
+            agentApplySummarySuccess.innerHTML = successes.map(entry => {
+                const namespace = escapeHtml(entry.namespace || 'unknown-namespace');
+                const workloadName = escapeHtml(entry.workloadName || 'unknown-app');
+                const workloadKind = escapeHtml(entry.workloadKind || 'workload');
+                return `
+                    <div class="modal-list-item">
+                        <div class="modal-list-title">${namespace}/${workloadName}</div>
+                        <div class="modal-list-meta">${workloadKind}</div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            agentApplySummarySuccess.innerHTML = '<div class="modal-muted">No applications were updated.</div>';
+        }
+    }
+
+    if (agentApplySummaryFailures) {
+        if (failures.length) {
+            agentApplySummaryFailures.innerHTML = failures.map(entry => {
+                const namespace = escapeHtml(entry.namespace || 'unknown-namespace');
+                const workloadName = escapeHtml(entry.workloadName || 'unknown-app');
+                const workloadKind = escapeHtml(entry.workloadKind || 'workload');
+                const reason = escapeHtml(entry.errorMessage || 'Failed to apply Spring Config Agent.');
+                return `
+                    <div class="modal-list-item">
+                        <div class="modal-list-title">${namespace}/${workloadName}</div>
+                        <div class="modal-list-meta">${workloadKind}</div>
+                        <div class="modal-list-reason">${reason}</div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            agentApplySummaryFailures.innerHTML = '<div class="modal-muted">No failures.</div>';
+        }
+    }
+
+    agentApplySummaryModal.classList.add('is-visible');
+    agentApplySummaryModal.setAttribute('aria-hidden', 'false');
     updateModalBodyState();
 }
 
