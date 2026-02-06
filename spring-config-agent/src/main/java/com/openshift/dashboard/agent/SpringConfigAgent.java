@@ -10,9 +10,12 @@ import java.lang.management.ManagementFactory;
 import java.net.InetAddress;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.SimpleFileVisitor;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -25,6 +28,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.TreeMap;
+import java.nio.file.attribute.BasicFileAttributes;
 import org.springframework.security.crypto.encrypt.Encryptors;
 import org.springframework.security.crypto.encrypt.TextEncryptor;
 
@@ -287,21 +291,39 @@ public class SpringConfigAgent {
             return matches;
         }
         try {
-            Files.walk(base, Math.max(1, maxDepth))
-                .filter(path -> Files.isRegularFile(path))
-                .filter(SpringConfigAgent::isConfigFileName)
-                .forEach(path -> {
-                    if (matches.size() + alreadyFound >= maxFiles) {
-                        return;
+            Files.walkFileTree(
+                base,
+                Collections.emptySet(),
+                Math.max(1, maxDepth),
+                new SimpleFileVisitor<Path>() {
+                    @Override
+                    public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                        if (matches.size() + alreadyFound >= maxFiles) {
+                            return FileVisitResult.TERMINATE;
+                        }
+                        if (attrs.isRegularFile() && isConfigFileName(file)) {
+                            ContentPayload payload = readFile(file, maxChars);
+                            Map<String, Object> entry = new LinkedHashMap<>();
+                            entry.put("path", file.toString());
+                            entry.put("sizeBytes", payload.sizeBytes);
+                            entry.put("truncated", payload.truncated);
+                            entry.put("content", payload.content);
+                            matches.add(entry);
+                        }
+                        return FileVisitResult.CONTINUE;
                     }
-                    ContentPayload payload = readFile(path, maxChars);
-                    Map<String, Object> entry = new LinkedHashMap<>();
-                    entry.put("path", path.toString());
-                    entry.put("sizeBytes", payload.sizeBytes);
-                    entry.put("truncated", payload.truncated);
-                    entry.put("content", payload.content);
-                    matches.add(entry);
-                });
+
+                    @Override
+                    public FileVisitResult visitFileFailed(Path file, IOException exc) {
+                        if (exc instanceof AccessDeniedException) {
+                            logDebug("Skipping unreadable path=%s", file);
+                            return FileVisitResult.CONTINUE;
+                        }
+                        logDebug("Skipping path=%s error=%s", file, exc.getMessage());
+                        return FileVisitResult.CONTINUE;
+                    }
+                }
+            );
         } catch (IOException ignored) {
             return matches;
         }
@@ -320,18 +342,36 @@ public class SpringConfigAgent {
             return matches;
         }
         try {
-            Files.walk(base, Math.max(1, maxDepth))
-                .filter(path -> Files.isRegularFile(path))
-                .filter(path -> path.toString().endsWith(".jar"))
-                .forEach(path -> {
-                    if (matches.size() + alreadyFound >= maxJars) {
-                        return;
+            Files.walkFileTree(
+                base,
+                Collections.emptySet(),
+                Math.max(1, maxDepth),
+                new SimpleFileVisitor<Path>() {
+                    @Override
+                    public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                        if (matches.size() + alreadyFound >= maxJars) {
+                            return FileVisitResult.TERMINATE;
+                        }
+                        if (attrs.isRegularFile() && file.toString().endsWith(".jar")) {
+                            Map<String, Object> entry = readJarConfigEntries(file, maxChars);
+                            if (entry != null) {
+                                matches.add(entry);
+                            }
+                        }
+                        return FileVisitResult.CONTINUE;
                     }
-                    Map<String, Object> entry = readJarConfigEntries(path, maxChars);
-                    if (entry != null) {
-                        matches.add(entry);
+
+                    @Override
+                    public FileVisitResult visitFileFailed(Path file, IOException exc) {
+                        if (exc instanceof AccessDeniedException) {
+                            logDebug("Skipping unreadable path=%s", file);
+                            return FileVisitResult.CONTINUE;
+                        }
+                        logDebug("Skipping path=%s error=%s", file, exc.getMessage());
+                        return FileVisitResult.CONTINUE;
                     }
-                });
+                }
+            );
         } catch (IOException ignored) {
             return matches;
         }

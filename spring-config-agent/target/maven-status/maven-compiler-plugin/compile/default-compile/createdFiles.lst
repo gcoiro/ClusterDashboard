@@ -1,3 +1,5 @@
+com\openshift\dashboard\agent\SpringConfigAgent$1.class
+com\openshift\dashboard\agent\SpringConfigAgent$2.class
 com\openshift\dashboard\agent\SpringConfigAgent$ContentPayload.class
 com\openshift\dashboard\agent\SpringConfigAgent$ConfigHints.class
 com\openshift\dashboard\agent\SpringConfigAgent$ConfigCandidate.class
