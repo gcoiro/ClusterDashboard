@@ -3891,7 +3891,7 @@ function isWorkloadFlaggedByMatches(namespace, workloadName, matches) {
     });
 }
 
-function collectMatchedTargetsWithFlags() {
+function collectAllTargetsWithFlags() {
     const targets = [];
     const flaggedTargets = [];
     const entries = getReportDataList();
@@ -3911,6 +3911,34 @@ function collectMatchedTargetsWithFlags() {
             }
             const workloadKind = item.workloadKind || '';
             const isFlagged = isWorkloadFlaggedByMatches(namespace, workloadName, item.matches || []);
+            const target = { namespace, workloadName, workloadKind, isFlagged };
+            targets.push(target);
+            if (isFlagged) {
+                flaggedTargets.push(target);
+            }
+        });
+
+        (entry.data.errors || []).forEach(err => {
+            if (!err || !err.workloadName || err.workloadKind === 'namespace') {
+                return;
+            }
+            if (err.agentApplied) {
+                return;
+            }
+            const workloadName = err.workloadName;
+            const workloadKind = err.workloadKind || '';
+            const matchId = getSkippedMatchId(namespace, workloadName, workloadKind);
+            const stableId = getSkippedStableId(namespace, workloadName, workloadKind);
+            const annotation = getReportAnnotation(matchId, stableId);
+            const keyCard = reportResults
+                ? reportResults.querySelector(`.report-key[data-match-id="${matchId}"]`)
+                : null;
+            const isFlagged = Boolean(
+                annotation.justified ||
+                annotation.migrationRequired ||
+                keyCard?.classList.contains('is-justified') ||
+                keyCard?.classList.contains('is-migration'),
+            );
             const target = { namespace, workloadName, workloadKind, isFlagged };
             targets.push(target);
             if (isFlagged) {
@@ -4131,7 +4159,7 @@ async function applySpringConfigAgentToAllApps(buttonEl) {
         return;
     }
 
-    const { targets: rawTargets, flaggedTargets } = collectMatchedTargetsWithFlags();
+    const { targets: rawTargets, flaggedTargets } = collectAllTargetsWithFlags();
     let targets = rawTargets;
     let confirmMessage = `Apply Spring Config Agent to ${targets.length} spring application(s) across all namespaces?`;
     if (flaggedTargets.length) {
