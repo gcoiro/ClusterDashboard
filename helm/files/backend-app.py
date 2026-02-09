@@ -692,6 +692,7 @@ def find_configmap_matches(configmap: dict, regex):
     data = configmap.get("data", {}) or {}
     if not isinstance(data, dict):
         return matches, unknown_files
+    debug_enabled = logger.isEnabledFor(logging.DEBUG)
 
     def walk_json(node, path="$"):
         found = []
@@ -767,22 +768,53 @@ def find_configmap_matches(configmap: dict, regex):
 
     for key, value in data.items():
         value_text = stringify_property_value(value)
+        if debug_enabled:
+            logger.debug(
+                "Configmap %s key=%s value_len=%s",
+                name,
+                key,
+                len(value_text) if isinstance(value_text, str) else 0,
+            )
         parsed_yaml = try_parse_yaml(value_text, key)
         parsed_json = None
         if parsed_yaml is not None:
+            if debug_enabled:
+                logger.debug("Configmap %s key=%s parsed_as=yaml", name, key)
             matched = False
-            for kind, token, path in walk_json(parsed_yaml):
+            entries = walk_json(parsed_yaml)
+            if debug_enabled:
+                logger.debug("Configmap %s key=%s yaml_entries=%s", name, key, len(entries))
+            for kind, token, path in entries:
                 if not token:
                     continue
+                matched_token = token
                 if regex.search(token) is None:
                     hostname = extract_hostname(token)
                     if not hostname or regex.search(hostname) is None:
+                        if debug_enabled:
+                            logger.debug(
+                                "Configmap %s key=%s yaml_no_match path=%s token=%s hostname=%s",
+                                name,
+                                key,
+                                path,
+                                token,
+                                hostname,
+                            )
                         continue
-                    token = hostname
+                    matched_token = hostname
+                if debug_enabled:
+                    logger.debug(
+                        "Configmap %s key=%s yaml_match path=%s token=%s matched=%s",
+                        name,
+                        key,
+                        path,
+                        token,
+                        matched_token,
+                    )
                 matches.append({
                     "configMap": name,
                     "key": key,
-                    "value": token,
+                    "value": matched_token,
                     "matchOn": f"yaml-{kind}",
                     "path": path,
                 })
@@ -792,19 +824,43 @@ def find_configmap_matches(configmap: dict, regex):
                 continue
         parsed_json = try_parse_json(value_text)
         if parsed_json is not None:
+            if debug_enabled:
+                logger.debug("Configmap %s key=%s parsed_as=json", name, key)
             matched = False
-            for kind, token, path in walk_json(parsed_json):
+            entries = walk_json(parsed_json)
+            if debug_enabled:
+                logger.debug("Configmap %s key=%s json_entries=%s", name, key, len(entries))
+            for kind, token, path in entries:
                 if not token:
                     continue
+                matched_token = token
                 if regex.search(token) is None:
                     hostname = extract_hostname(token)
                     if not hostname or regex.search(hostname) is None:
+                        if debug_enabled:
+                            logger.debug(
+                                "Configmap %s key=%s json_no_match path=%s token=%s hostname=%s",
+                                name,
+                                key,
+                                path,
+                                token,
+                                hostname,
+                            )
                         continue
-                    token = hostname
+                    matched_token = hostname
+                if debug_enabled:
+                    logger.debug(
+                        "Configmap %s key=%s json_match path=%s token=%s matched=%s",
+                        name,
+                        key,
+                        path,
+                        token,
+                        matched_token,
+                    )
                 matches.append({
                     "configMap": name,
                     "key": key,
-                    "value": token,
+                    "value": matched_token,
                     "matchOn": f"json-{kind}",
                     "path": path,
                 })
@@ -821,6 +877,8 @@ def find_configmap_matches(configmap: dict, regex):
                     "extension": ext,
                 })
         if regex.search(value_text) is not None:
+            if debug_enabled:
+                logger.debug("Configmap %s key=%s value_match=full", name, key)
             matches.append({
                 "configMap": name,
                 "key": key,
@@ -829,15 +887,32 @@ def find_configmap_matches(configmap: dict, regex):
             })
             continue
         for candidate in extract_candidates(value_text):
+            matched_candidate = candidate
             if regex.search(candidate) is None:
                 hostname = extract_hostname(candidate)
                 if not hostname or regex.search(hostname) is None:
+                    if debug_enabled:
+                        logger.debug(
+                            "Configmap %s key=%s fragment_no_match candidate=%s hostname=%s",
+                            name,
+                            key,
+                            candidate,
+                            hostname,
+                        )
                     continue
-                candidate = hostname
+                matched_candidate = hostname
+            if debug_enabled:
+                logger.debug(
+                    "Configmap %s key=%s fragment_match candidate=%s matched=%s",
+                    name,
+                    key,
+                    candidate,
+                    matched_candidate,
+                )
             matches.append({
                 "configMap": name,
                 "key": key,
-                "value": candidate,
+                "value": matched_candidate,
                 "matchOn": "value-fragment",
             })
             break

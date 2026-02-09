@@ -4245,6 +4245,22 @@ function renderConfigmapResults(container, reportData, pattern, caseInsensitive,
     `;
 }
 
+function buildConfigmapReportMatches(reportData) {
+    const matches = reportData?.matches || [];
+    return matches.map(match => {
+        const configMap = match.configMap || 'configmap';
+        const keyName = match.key || 'value';
+        const pathSuffix = match.path ? `:${match.path}` : '';
+        const key = `${configMap}/${keyName}${pathSuffix}`;
+        return {
+            key,
+            value: match.value || '',
+            source: `configmap:${configMap}`,
+            matchOn: match.matchOn || 'configmap',
+        };
+    });
+}
+
 async function checkConfigmapsForSkippedApps(buttonEl) {
     if (!reportResultsState) {
         setReportStatus('Run a report before checking configmaps.', 'error');
@@ -4330,6 +4346,19 @@ async function checkConfigmapsForSkippedApps(buttonEl) {
                 const statusType = unknownCount ? 'error' : 'success';
                 setInlineStatus(statusEl, statusMessage, statusType);
                 renderConfigmapResults(resultsEl, reportData, pattern, caseInsensitive);
+                if (matchCount) {
+                    const mappedMatches = buildConfigmapReportMatches(reportData);
+                    if (mappedMatches.length) {
+                        applyWorkloadReportUpdate(target.namespace, target.workloadName, {
+                            matched: [{
+                                workloadName: target.workloadName,
+                                workloadKind: target.workloadKind,
+                                matches: mappedMatches,
+                            }],
+                            errors: [],
+                        });
+                    }
+                }
                 successes.push({
                     namespace: target.namespace,
                     workloadName: target.workloadName,
