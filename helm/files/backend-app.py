@@ -737,6 +737,16 @@ def find_configmap_matches(configmap: dict, regex):
         except Exception:
             return None
 
+    def extract_hostname(value: str):
+        if not isinstance(value, str) or not value:
+            return ""
+        try:
+            parsed = urllib.parse.urlparse(value)
+        except Exception:
+            return ""
+        hostname = parsed.hostname or ""
+        return hostname.strip()
+
     def extract_candidates(text: str):
         candidates = set()
         if not text:
@@ -765,7 +775,10 @@ def find_configmap_matches(configmap: dict, regex):
                 if not token:
                     continue
                 if regex.search(token) is None:
-                    continue
+                    hostname = extract_hostname(token)
+                    if not hostname or regex.search(hostname) is None:
+                        continue
+                    token = hostname
                 matches.append({
                     "configMap": name,
                     "key": key,
@@ -784,7 +797,10 @@ def find_configmap_matches(configmap: dict, regex):
                 if not token:
                     continue
                 if regex.search(token) is None:
-                    continue
+                    hostname = extract_hostname(token)
+                    if not hostname or regex.search(hostname) is None:
+                        continue
+                    token = hostname
                 matches.append({
                     "configMap": name,
                     "key": key,
@@ -814,7 +830,10 @@ def find_configmap_matches(configmap: dict, regex):
             continue
         for candidate in extract_candidates(value_text):
             if regex.search(candidate) is None:
-                continue
+                hostname = extract_hostname(candidate)
+                if not hostname or regex.search(hostname) is None:
+                    continue
+                candidate = hostname
             matches.append({
                 "configMap": name,
                 "key": key,
