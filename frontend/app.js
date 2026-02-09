@@ -35,6 +35,7 @@ const reportCollapseNs = document.getElementById('report-collapse-ns');
 const reportCollapseApps = document.getElementById('report-collapse-apps');
 const reportCollapseErrors = document.getElementById('report-collapse-errors');
 const reportApplyAgentAll = document.getElementById('report-apply-agent-all');
+const reportCheckConfigmaps = document.getElementById('report-check-configmaps');
 const reportSelectKeys = document.getElementById('report-select-keys');
 const reportClearSelection = document.getElementById('report-clear-selection');
 const reportPattern = document.getElementById('report-pattern');
@@ -213,6 +214,13 @@ document.addEventListener('DOMContentLoaded', () => {
         reportApplyAgentAll.addEventListener('click', (event) => {
             const buttonEl = event.currentTarget;
             applySpringConfigAgentToAllApps(buttonEl);
+        });
+    }
+
+    if (reportCheckConfigmaps) {
+        reportCheckConfigmaps.addEventListener('click', (event) => {
+            const buttonEl = event.currentTarget;
+            checkConfigmapsForSkippedApps(buttonEl);
         });
     }
 
@@ -1378,6 +1386,7 @@ function buildReportCards(data, openApps) {
                     </div>
                     <div class="report-inline-status" data-inline-status="true"></div>
                     <span>${escapeHtml(err.message || 'Failed to fetch config')}</span>
+                    <div class="report-configmap-results" data-configmap-results="true"></div>
                     ${annotationControls}
                 </div>
             `;
@@ -4154,6 +4163,189 @@ async function applySpringConfigAgentToSkippedNamespace(namespace, buttonEl) {
         buttonResolver: resolveSkippedAgentButton,
         triggerButton: buttonEl,
     });
+}
+
+function getSkippedReportCardElements(namespace, workloadName, workloadKind) {
+    if (!reportResults || !namespace || !workloadName) {
+        return { keyCard: null, statusEl: null, resultsEl: null };
+    }
+    const matchId = getSkippedMatchId(namespace, workloadName, workloadKind || '');
+    const keyCard = reportResults.querySelector(`.report-key[data-match-id="${matchId}"]`);
+    if (!keyCard) {
+        return { keyCard: null, statusEl: null, resultsEl: null };
+    }
+    const statusEl = keyCard.querySelector('[data-inline-status="true"]');
+    const resultsEl = keyCard.querySelector('[data-configmap-results="true"]');
+    return { keyCard, statusEl, resultsEl };
+}
+
+function renderConfigmapResults(container, reportData, pattern, caseInsensitive, errorMessage) {
+    if (!container) {
+        return;
+    }
+    if (errorMessage) {
+        container.innerHTML = `
+            <div class="report-configmap-status is-error">ConfigMap check failed: ${escapeHtml(errorMessage)}</div>
+        `;
+        return;
+    }
+
+    const configMaps = reportData?.configMaps || [];
+    const missing = reportData?.missingConfigMaps || [];
+    const matches = reportData?.matches || [];
+    const totalCount = configMaps.length;
+    const matchCount = matches.length;
+
+    let statusText = '';
+    if (!totalCount) {
+        statusText = 'No configmaps referenced by this workload.';
+    } else if (!matchCount) {
+        statusText = `No configmap values matched (scanned ${totalCount}).`;
+    } else {
+        statusText = `Matched ${matchCount} value(s) across ${totalCount} configmap(s).`;
+    }
+
+    const missingHtml = missing.length
+        ? `<div class="report-configmap-note">Missing: ${escapeHtml(missing.join(', '))}</div>`
+        : '';
+
+    const maxMatches = 6;
+    const matchesHtml = matchCount
+        ? `
+            <div class="report-configmap-list">
+                ${matches.slice(0, maxMatches).map(match => {
+                    const cmName = escapeHtml(match.configMap || 'configmap');
+                    const key = escapeHtml(match.key || '');
+                    const valueText = match.value || '';
+                    const highlighted = highlightMatches(valueText, pattern, caseInsensitive);
+                    return `
+                        <div class="report-configmap-item">
+                            <div class="report-configmap-title">${cmName}${key ? `:${key}` : ''}</div>
+                            <div class="report-configmap-value">${highlighted}</div>
+                        </div>
+                    `;
+                }).join('')}
+                ${matchCount > maxMatches ? `<div class="report-configmap-note">Showing ${maxMatches} of ${matchCount} matches.</div>` : ''}
+            </div>
+        `
+        : '';
+
+    container.innerHTML = `
+        <div class="report-configmap-status">${escapeHtml(statusText)}</div>
+        ${missingHtml}
+        ${matchesHtml}
+    `;
+}
+
+async function checkConfigmapsForSkippedApps(buttonEl) {
+    if (!reportResultsState) {
+        setReportStatus('Run a report before checking configmaps.', 'error');
+        return;
+    }
+
+    const pattern = reportPattern.value.trim();
+    if (!pattern) {
+        setReportStatus('Enter a regex pattern before checking configmaps.', 'error');
+        return;
+    }
+
+    const targets = collectReportTargets({ includeErrors: true, includeMatched: false });
+    if (!targets.length) {
+        setReportStatus('No skipped applications found to check.', 'info');
+        return;
+    }
+
+    const confirmMessage = `Check configmaps for ${targets.length} skipped application(s)?`;
+    if (!confirm(confirmMessage)) {
+        return;
+    }
+
+    const originalLabel = buttonEl ? buttonEl.textContent : '';
+    if (buttonEl) {
+        buttonEl.disabled = true;
+    }
+
+    const caseInsensitive = reportCase.checked;
+    const concurrency = Math.min(6, targets.length);
+    let completed = 0;
+    let matchTotal = 0;
+    let errorTotal = 0;
+    let index = 0;
+
+    async function worker() {
+        while (index < targets.length) {
+            const target = targets[index];
+            index += 1;
+            const { statusEl, resultsEl } = getSkippedReportCardElements(
+                target.namespace,
+                target.workloadName,
+                target.workloadKind,
+            );
+            setInlineStatus(statusEl, 'Checking configmaps...', 'info');
+
+            const params = new URLSearchParams({
+                pattern,
+                caseInsensitive: caseInsensitive ? 'true' : 'false',
+            });
+            if (target.workloadKind) {
+                params.set('workloadKind', target.workloadKind);
+            }
+
+            let reportData = null;
+            let errorMessage = '';
+            try {
+                const response = await fetchWithRetry(
+                    `${API_BASE_URL}/config/${target.namespace}/${target.workloadName}/configmaps/report?${params.toString()}`,
+                );
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    errorMessage = errorData.detail?.message || errorData.detail || 'Failed to check configmaps';
+                    throw new Error(errorMessage);
+                }
+                reportData = await response.json();
+                matchTotal += (reportData.matches || []).length;
+                setInlineStatus(
+                    statusEl,
+                    `Configmaps checked: ${(reportData.configMaps || []).length}.`,
+                    'success',
+                );
+                renderConfigmapResults(resultsEl, reportData, pattern, caseInsensitive);
+            } catch (error) {
+                errorTotal += 1;
+                errorMessage = error.message || 'Failed to check configmaps';
+                setInlineStatus(statusEl, `Configmap check failed: ${errorMessage}`, 'error');
+                renderConfigmapResults(resultsEl, null, pattern, caseInsensitive, errorMessage);
+            } finally {
+                completed += 1;
+                if (buttonEl) {
+                    buttonEl.textContent = `Checking... ${completed}/${targets.length}`;
+                }
+                setReportStatus(
+                    `Checked configmaps for ${completed}/${targets.length} skipped application(s)...`,
+                    'info',
+                );
+            }
+        }
+    }
+
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+    if (buttonEl) {
+        buttonEl.disabled = false;
+        buttonEl.textContent = originalLabel;
+    }
+
+    if (errorTotal) {
+        setReportStatus(
+            `Configmap check finished with ${errorTotal} error(s). ${matchTotal} match(es) found.`,
+            'error',
+        );
+    } else {
+        setReportStatus(
+            `Configmap check complete. ${matchTotal} match(es) found across skipped applications.`,
+            'success',
+        );
+    }
 }
 
 async function applySpringConfigAgentToAllApps(buttonEl) {

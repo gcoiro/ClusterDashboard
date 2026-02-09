@@ -812,6 +812,55 @@ header h1 {
     color: #0284c7;
 }
 
+.report-configmap-results {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.report-configmap-status {
+    font-size: 0.82em;
+    color: var(--muted);
+}
+
+.report-configmap-status.is-error {
+    color: #b91c1c;
+}
+
+.report-configmap-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.report-configmap-item {
+    padding: 6px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: #f8fafc;
+}
+
+.report-configmap-title {
+    font-weight: 600;
+    font-size: 0.85em;
+    color: var(--ink);
+}
+
+.report-configmap-value {
+    margin-top: 4px;
+    font-size: 0.85em;
+    color: var(--muted);
+    word-break: break-word;
+}
+
+.report-configmap-note {
+    font-size: 0.8em;
+    color: var(--muted);
+}
+
 .report-annotation {
     display: none;
     margin-top: 8px;

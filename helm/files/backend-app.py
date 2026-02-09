@@ -611,6 +611,98 @@ def get_workload_resource(workload: dict):
     return None
 
 
+def extract_configmap_names_from_pod_spec(pod_spec: dict):
+    names = set()
+    if not isinstance(pod_spec, dict):
+        return names
+
+    def add_name(value):
+        if isinstance(value, str) and value.strip():
+            names.add(value.strip())
+
+    for volume in pod_spec.get("volumes", []) or []:
+        if not isinstance(volume, dict):
+            continue
+        config_map = volume.get("configMap")
+        if isinstance(config_map, dict):
+            add_name(config_map.get("name"))
+        projected = volume.get("projected")
+        if isinstance(projected, dict):
+            for source in projected.get("sources", []) or []:
+                if not isinstance(source, dict):
+                    continue
+                projected_map = source.get("configMap")
+                if isinstance(projected_map, dict):
+                    add_name(projected_map.get("name"))
+
+    containers = (pod_spec.get("containers", []) or []) + (pod_spec.get("initContainers", []) or [])
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for env_from in container.get("envFrom", []) or []:
+            if not isinstance(env_from, dict):
+                continue
+            config_map_ref = env_from.get("configMapRef")
+            if isinstance(config_map_ref, dict):
+                add_name(config_map_ref.get("name"))
+        for env in container.get("env", []) or []:
+            if not isinstance(env, dict):
+                continue
+            value_from = env.get("valueFrom") or {}
+            if not isinstance(value_from, dict):
+                continue
+            config_map_key_ref = value_from.get("configMapKeyRef")
+            if isinstance(config_map_key_ref, dict):
+                add_name(config_map_key_ref.get("name"))
+
+    return names
+
+
+def extract_configmap_names_from_workload(workload_resource: dict):
+    if not isinstance(workload_resource, dict):
+        return []
+    template = workload_resource.get("spec", {}).get("template", {}) or {}
+    pod_spec = template.get("spec", {}) or {}
+    names = extract_configmap_names_from_pod_spec(pod_spec)
+    return sorted(names)
+
+
+def fetch_configmap(namespace: str, name: str):
+    result = run_oc_capture(["get", "configmap", name, "-n", namespace, "-o", "json"], timeout_seconds=20)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        if is_not_found_error(detail):
+            return None
+        status = 403 if "forbidden" in detail.lower() else 500
+        raise HTTPException(status_code=status, detail=f"oc error: {detail}")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        logger.error("oc json parse error (configmap %s): %s", name, str(exc))
+        raise HTTPException(status_code=500, detail=f"oc output parse error: {str(exc)}")
+
+
+def find_configmap_matches(configmap: dict, regex):
+    matches = []
+    if not isinstance(configmap, dict):
+        return matches
+    name = configmap.get("metadata", {}).get("name") or ""
+    data = configmap.get("data", {}) or {}
+    if not isinstance(data, dict):
+        return matches
+    for key, value in data.items():
+        value_text = stringify_property_value(value)
+        if regex.search(value_text) is None:
+            continue
+        matches.append({
+            "configMap": name,
+            "key": key,
+            "value": value_text,
+            "matchOn": "value",
+        })
+    return matches
+
+
 def fetch_actuator_env(url: str):
     logger.info("Fetching actuator env %s", url)
     if CACHE_TTL_SECONDS > 0:
@@ -1112,6 +1204,80 @@ async def get_spring_config_report_for_workload(
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to build config report: {str(exc)}")
+
+
+@app.get("/api/config/{namespace}/{workloadName}/configmaps/report")
+async def get_configmap_report_for_workload(
+    namespace: str,
+    workloadName: str,
+    pattern: str,
+    caseInsensitive: bool = False,
+    workloadKind: Optional[str] = None,
+):
+    try:
+        if not pattern:
+            raise HTTPException(status_code=400, detail="pattern query parameter is required")
+        try:
+            flags = re.IGNORECASE if caseInsensitive else 0
+            regex = re.compile(pattern, flags=flags)
+        except re.error as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid regex pattern: {str(exc)}")
+
+        workload_kind = normalize_workload_kind(workloadKind)
+        workload = None
+        if workload_kind is None:
+            workload_kind, workload = get_workload(namespace, workloadName)
+            if not workload:
+                raise_structured_error(
+                    404,
+                    "workload_not_found",
+                    f"Workload '{workloadName}' not found in namespace '{namespace}'",
+                )
+        if workload is None:
+            _, workload = get_workload(namespace, workloadName)
+            if not workload:
+                raise_structured_error(
+                    404,
+                    "workload_not_found",
+                    f"Workload '{workloadName}' not found in namespace '{namespace}'",
+                )
+
+        workload_resource = get_workload_resource(workload)
+        if not workload_resource:
+            raise_structured_error(
+                500,
+                "workload_resource_missing",
+                f"Failed to resolve workload resource for '{workloadName}'",
+            )
+
+        configmap_names = await asyncio.to_thread(
+            extract_configmap_names_from_workload,
+            workload_resource,
+        )
+        matches = []
+        missing = []
+
+        for name in configmap_names:
+            configmap = await asyncio.to_thread(fetch_configmap, namespace, name)
+            if configmap is None:
+                missing.append(name)
+                continue
+            matches.extend(find_configmap_matches(configmap, regex))
+
+        return {
+            "namespace": namespace,
+            "workloadName": workloadName,
+            "workloadKind": workload_kind,
+            "pattern": pattern,
+            "caseInsensitive": caseInsensitive,
+            "configMaps": configmap_names,
+            "missingConfigMaps": missing,
+            "matches": matches,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to check configmaps: {str(exc)}")
 
 
 @app.get("/api/config/{namespace}/{workloadName}/rollout-status")
