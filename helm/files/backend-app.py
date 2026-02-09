@@ -907,15 +907,47 @@ def find_configmap_matches(configmap: dict, regex):
                 candidates.add(token)
         return list(candidates)
 
-    def extract_hostname(value: str):
+    def extract_hostnames(value: str):
         if not isinstance(value, str) or not value:
-            return ""
+            return []
+        value = value.strip().strip('"').strip("'")
+        if not value:
+            return []
+        hostnames = []
         try:
             parsed = urllib.parse.urlparse(value)
         except Exception:
-            return ""
-        hostname = parsed.hostname or ""
-        return hostname.strip()
+            parsed = None
+        if parsed and parsed.hostname:
+            hostnames.append(parsed.hostname.strip())
+        for chunk in re.split(r"[,\s]+", value):
+            if not chunk:
+                continue
+            chunk = chunk.strip().strip('"').strip("'")
+            if not chunk:
+                continue
+            if "://" in chunk:
+                try:
+                    parsed_chunk = urllib.parse.urlparse(chunk)
+                    if parsed_chunk.hostname:
+                        hostnames.append(parsed_chunk.hostname.strip())
+                        continue
+                except Exception:
+                    pass
+            chunk = chunk.split("/", 1)[0]
+            if ":" in chunk:
+                host_part = chunk.split(":", 1)[0]
+            else:
+                host_part = chunk
+            if "." in host_part:
+                hostnames.append(host_part.strip())
+        seen = set()
+        ordered = []
+        for host in hostnames:
+            if host and host not in seen:
+                seen.add(host)
+                ordered.append(host)
+        return ordered
 
     def process_entries(entries, kind_label, key_name):
         matched_any = False
@@ -926,8 +958,13 @@ def find_configmap_matches(configmap: dict, regex):
                 continue
             matched_token = token
             if regex.search(token) is None:
-                hostname = extract_hostname(token)
-                if not hostname or regex.search(hostname) is None:
+                hostnames = extract_hostnames(token)
+                matched_host = ""
+                for host in hostnames:
+                    if regex.search(host) is not None:
+                        matched_host = host
+                        break
+                if not matched_host:
                     if debug_enabled:
                         logger.debug(
                             "Configmap %s key=%s %s_no_match path=%s token=%s hostname=%s",
@@ -936,10 +973,10 @@ def find_configmap_matches(configmap: dict, regex):
                             kind_label,
                             path,
                             token,
-                            hostname,
+                            "",
                         )
                     continue
-                matched_token = hostname
+                matched_token = matched_host
             if debug_enabled:
                 logger.debug(
                     "Configmap %s key=%s %s_match path=%s token=%s matched=%s",
@@ -1051,18 +1088,23 @@ def find_configmap_matches(configmap: dict, regex):
         for candidate in extract_candidates(value_text):
             matched_candidate = candidate
             if regex.search(candidate) is None:
-                hostname = extract_hostname(candidate)
-                if not hostname or regex.search(hostname) is None:
+                hostnames = extract_hostnames(candidate)
+                matched_host = ""
+                for host in hostnames:
+                    if regex.search(host) is not None:
+                        matched_host = host
+                        break
+                if not matched_host:
                     if debug_enabled:
                         logger.debug(
                             "Configmap %s key=%s fragment_no_match candidate=%s hostname=%s",
                             name,
                             key,
                             candidate,
-                            hostname,
+                            "",
                         )
                     continue
-                matched_candidate = hostname
+                matched_candidate = matched_host
             if debug_enabled:
                 logger.debug(
                     "Configmap %s key=%s fragment_match candidate=%s matched=%s",
