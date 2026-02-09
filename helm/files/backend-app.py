@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 import logging
 import time
 import redis
+import yaml
 
 load_dotenv()
 
@@ -684,23 +685,144 @@ def fetch_configmap(namespace: str, name: str):
 
 def find_configmap_matches(configmap: dict, regex):
     matches = []
+    unknown_files = []
     if not isinstance(configmap, dict):
-        return matches
+        return matches, unknown_files
     name = configmap.get("metadata", {}).get("name") or ""
     data = configmap.get("data", {}) or {}
     if not isinstance(data, dict):
-        return matches
+        return matches, unknown_files
+
+    def walk_json(node, path="$"):
+        found = []
+        if isinstance(node, dict):
+            for key, value in node.items():
+                key_path = f"{path}.{key}"
+                found.append(("key", key, key_path))
+                found.extend(walk_json(value, key_path))
+        elif isinstance(node, list):
+            for idx, item in enumerate(node):
+                found.extend(walk_json(item, f"{path}[{idx}]"))
+        else:
+            found.append(("value", stringify_property_value(node), path))
+        return found
+
+    def try_parse_json(text: str):
+        if not isinstance(text, str):
+            return None
+        stripped = text.strip()
+        if not stripped:
+            return None
+        if stripped[0] not in ("{", "["):
+            return None
+        if len(stripped) > 200000:
+            return None
+        try:
+            return json.loads(stripped)
+        except Exception:
+            return None
+
+    def try_parse_yaml(text: str, key_name: str):
+        if not isinstance(text, str):
+            return None
+        if key_name and not key_name.lower().endswith((".yml", ".yaml")):
+            return None
+        stripped = text.strip()
+        if not stripped:
+            return None
+        if len(stripped) > 200000:
+            return None
+        try:
+            return yaml.safe_load(stripped)
+        except Exception:
+            return None
+
+    def extract_candidates(text: str):
+        candidates = set()
+        if not text:
+            return []
+        for match in re.finditer(r'"([^"\\]*(?:\\.[^"\\]*)*)"', text):
+            token = match.group(1)
+            if token:
+                candidates.add(token)
+        for match in re.finditer(r"'([^'\\]*(?:\\.[^'\\]*)*)'", text):
+            token = match.group(1)
+            if token:
+                candidates.add(token)
+        for match in re.finditer(r"https?://[^\s\"'>)]+", text):
+            token = match.group(0)
+            if token:
+                candidates.add(token)
+        return list(candidates)
+
     for key, value in data.items():
         value_text = stringify_property_value(value)
-        if regex.search(value_text) is None:
+        parsed_yaml = try_parse_yaml(value_text, key)
+        parsed_json = None
+        if parsed_yaml is not None:
+            matched = False
+            for kind, token, path in walk_json(parsed_yaml):
+                if not token:
+                    continue
+                if regex.search(token) is None:
+                    continue
+                matches.append({
+                    "configMap": name,
+                    "key": key,
+                    "value": token,
+                    "matchOn": f"yaml-{kind}",
+                    "path": path,
+                })
+                matched = True
+                break
+            if matched:
+                continue
+        parsed_json = try_parse_json(value_text)
+        if parsed_json is not None:
+            matched = False
+            for kind, token, path in walk_json(parsed_json):
+                if not token:
+                    continue
+                if regex.search(token) is None:
+                    continue
+                matches.append({
+                    "configMap": name,
+                    "key": key,
+                    "value": token,
+                    "matchOn": f"json-{kind}",
+                    "path": path,
+                })
+                matched = True
+                break
+            if matched:
+                continue
+        if isinstance(key, str) and "." in key:
+            ext = key.rsplit(".", 1)[-1].lower()
+            if ext and ext not in ("json", "yaml", "yml") and parsed_yaml is None and parsed_json is None:
+                unknown_files.append({
+                    "configMap": name,
+                    "key": key,
+                    "extension": ext,
+                })
+        if regex.search(value_text) is not None:
+            matches.append({
+                "configMap": name,
+                "key": key,
+                "value": value_text,
+                "matchOn": "value",
+            })
             continue
-        matches.append({
-            "configMap": name,
-            "key": key,
-            "value": value_text,
-            "matchOn": "value",
-        })
-    return matches
+        for candidate in extract_candidates(value_text):
+            if regex.search(candidate) is None:
+                continue
+            matches.append({
+                "configMap": name,
+                "key": key,
+                "value": candidate,
+                "matchOn": "value-fragment",
+            })
+            break
+    return matches, unknown_files
 
 
 def fetch_actuator_env(url: str):
@@ -1256,13 +1378,17 @@ async def get_configmap_report_for_workload(
         )
         matches = []
         missing = []
+        unknown_files = []
 
         for name in configmap_names:
             configmap = await asyncio.to_thread(fetch_configmap, namespace, name)
             if configmap is None:
                 missing.append(name)
                 continue
-            matches.extend(find_configmap_matches(configmap, regex))
+            configmap_matches, configmap_unknown = find_configmap_matches(configmap, regex)
+            matches.extend(configmap_matches)
+            if configmap_unknown:
+                unknown_files.extend(configmap_unknown)
 
         return {
             "namespace": namespace,
@@ -1272,6 +1398,7 @@ async def get_configmap_report_for_workload(
             "caseInsensitive": caseInsensitive,
             "configMaps": configmap_names,
             "missingConfigMaps": missing,
+            "unknownFiles": unknown_files,
             "matches": matches,
         }
     except HTTPException:

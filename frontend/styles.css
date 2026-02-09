@@ -861,6 +861,10 @@ header h1 {
     color: var(--muted);
 }
 
+.report-configmap-unknown {
+    color: #b91c1c;
+}
+
 .report-annotation {
     display: none;
     margin-top: 8px;

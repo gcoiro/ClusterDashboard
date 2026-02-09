@@ -110,6 +110,7 @@ const reportAnnotationSeeds = new Map();
 let reportViewState = { namespace: null, app: null };
 let reportAnnotationSaveTimer = null;
 let lastAgentApplySummary = null;
+let lastConfigmapCheckSummary = null;
 let reportNamespaceChartMode = 'detail';
 let reportNamespaceCount = 0;
 const REPORT_NAMESPACE_PIE_LIMIT = 120;
@@ -4192,9 +4193,11 @@ function renderConfigmapResults(container, reportData, pattern, caseInsensitive,
 
     const configMaps = reportData?.configMaps || [];
     const missing = reportData?.missingConfigMaps || [];
+    const unknownFiles = reportData?.unknownFiles || [];
     const matches = reportData?.matches || [];
     const totalCount = configMaps.length;
     const matchCount = matches.length;
+    const unknownCount = unknownFiles.length;
 
     let statusText = '';
     if (!totalCount) {
@@ -4207,6 +4210,10 @@ function renderConfigmapResults(container, reportData, pattern, caseInsensitive,
 
     const missingHtml = missing.length
         ? `<div class="report-configmap-note">Missing: ${escapeHtml(missing.join(', '))}</div>`
+        : '';
+
+    const unknownHtml = unknownCount
+        ? `<div class="report-configmap-note report-configmap-unknown">Unknown file extensions: ${escapeHtml(unknownFiles.map(item => `${item.configMap}/${item.key}`).join(', '))}</div>`
         : '';
 
     const maxMatches = 6;
@@ -4233,6 +4240,7 @@ function renderConfigmapResults(container, reportData, pattern, caseInsensitive,
     container.innerHTML = `
         <div class="report-configmap-status">${escapeHtml(statusText)}</div>
         ${missingHtml}
+        ${unknownHtml}
         ${matchesHtml}
     `;
 }
@@ -4271,6 +4279,9 @@ async function checkConfigmapsForSkippedApps(buttonEl) {
     let matchTotal = 0;
     let errorTotal = 0;
     let index = 0;
+    const successes = [];
+    const failures = [];
+    const unknowns = [];
 
     async function worker() {
         while (index < targets.length) {
@@ -4303,18 +4314,40 @@ async function checkConfigmapsForSkippedApps(buttonEl) {
                     throw new Error(errorMessage);
                 }
                 reportData = await response.json();
-                matchTotal += (reportData.matches || []).length;
-                setInlineStatus(
-                    statusEl,
-                    `Configmaps checked: ${(reportData.configMaps || []).length}.`,
-                    'success',
-                );
+                const matchCount = (reportData.matches || []).length;
+                matchTotal += matchCount;
+                const configmapCount = (reportData.configMaps || []).length;
+                const unknownCount = (reportData.unknownFiles || []).length;
+                if (unknownCount) {
+                    unknowns.push({
+                        namespace: target.namespace,
+                        workloadName: target.workloadName,
+                        workloadKind: target.workloadKind,
+                        files: (reportData.unknownFiles || []).map(item => `${item.configMap}/${item.key}`),
+                    });
+                }
+                const statusMessage = `Configmaps checked: ${(reportData.configMaps || []).length}.`;
+                const statusType = unknownCount ? 'error' : 'success';
+                setInlineStatus(statusEl, statusMessage, statusType);
                 renderConfigmapResults(resultsEl, reportData, pattern, caseInsensitive);
+                successes.push({
+                    namespace: target.namespace,
+                    workloadName: target.workloadName,
+                    workloadKind: target.workloadKind,
+                    matchCount,
+                    configmapCount,
+                });
             } catch (error) {
                 errorTotal += 1;
                 errorMessage = error.message || 'Failed to check configmaps';
                 setInlineStatus(statusEl, `Configmap check failed: ${errorMessage}`, 'error');
                 renderConfigmapResults(resultsEl, null, pattern, caseInsensitive, errorMessage);
+                failures.push({
+                    namespace: target.namespace,
+                    workloadName: target.workloadName,
+                    workloadKind: target.workloadKind,
+                    errorMessage,
+                });
             } finally {
                 completed += 1;
                 if (buttonEl) {
@@ -4346,6 +4379,15 @@ async function checkConfigmapsForSkippedApps(buttonEl) {
             'success',
         );
     }
+
+    lastConfigmapCheckSummary = {
+        title: 'Configmap check summary',
+        total: targets.length,
+        successes,
+        failures,
+        unknowns,
+    };
+    openConfigmapCheckSummaryTab(lastConfigmapCheckSummary);
 }
 
 async function applySpringConfigAgentToAllApps(buttonEl) {
@@ -5112,6 +5154,191 @@ function openAgentApplySummaryTab(summary) {
     const newTab = window.open(url, '_blank');
     if (!newTab) {
         setReportStatus('Popup blocked. Allow popups to open the agent summary tab.', 'error');
+        URL.revokeObjectURL(url);
+        return;
+    }
+    setTimeout(() => {
+        URL.revokeObjectURL(url);
+    }, 60000);
+}
+
+function openConfigmapCheckSummaryTab(summary) {
+    if (!summary) {
+        setReportStatus('No configmap summary available.', 'error');
+        return;
+    }
+
+    const successes = Array.isArray(summary.successes) ? summary.successes : [];
+    const failures = Array.isArray(summary.failures) ? summary.failures : [];
+    const unknowns = Array.isArray(summary.unknowns) ? summary.unknowns : [];
+    const total = Number.isFinite(summary.total) ? summary.total : successes.length + failures.length;
+    const titleText = summary.title || 'Configmap check summary';
+
+    const successHtml = successes.length
+        ? successes.map(entry => {
+            const namespace = escapeHtml(entry.namespace || 'unknown-namespace');
+            const workloadName = escapeHtml(entry.workloadName || 'unknown-app');
+            const workloadKind = escapeHtml(entry.workloadKind || 'workload');
+            const matchCount = Number.isFinite(entry.matchCount) ? entry.matchCount : 0;
+            const configmapCount = Number.isFinite(entry.configmapCount) ? entry.configmapCount : 0;
+            return `
+                <div class="list-item">
+                    <div class="list-title">${namespace}/${workloadName}</div>
+                    <div class="list-meta">${workloadKind} | Matches: ${matchCount} | Configmaps: ${configmapCount}</div>
+                </div>
+            `;
+        }).join('')
+        : '<div class="muted">No skipped applications were checked.</div>';
+
+    const failureHtml = failures.length
+        ? failures.map(entry => {
+            const namespace = escapeHtml(entry.namespace || 'unknown-namespace');
+            const workloadName = escapeHtml(entry.workloadName || 'unknown-app');
+            const workloadKind = escapeHtml(entry.workloadKind || 'workload');
+            const reason = escapeHtml(entry.errorMessage || 'Failed to check configmaps.');
+            return `
+                <div class="list-item">
+                    <div class="list-title">${namespace}/${workloadName}</div>
+                    <div class="list-meta">${workloadKind}</div>
+                    <div class="list-reason">${reason}</div>
+                </div>
+            `;
+        }).join('')
+        : '<div class="muted">No failures.</div>';
+
+    const unknownHtml = unknowns.length
+        ? unknowns.map(entry => {
+            const namespace = escapeHtml(entry.namespace || 'unknown-namespace');
+            const workloadName = escapeHtml(entry.workloadName || 'unknown-app');
+            const workloadKind = escapeHtml(entry.workloadKind || 'workload');
+            const files = Array.isArray(entry.files) ? entry.files : [];
+            const fileList = files.length ? files.map(item => escapeHtml(item)).join(', ') : 'Unknown files';
+            return `
+                <div class="list-item">
+                    <div class="list-title">${namespace}/${workloadName}</div>
+                    <div class="list-meta">${workloadKind}</div>
+                    <div class="list-reason">${fileList}</div>
+                </div>
+            `;
+        }).join('')
+        : '<div class="muted">No unknown file extensions.</div>';
+
+    const docHtml = `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>${escapeHtml(titleText)}</title>
+            <style>
+                :root {
+                    color-scheme: light;
+                    --bg: #f8fafc;
+                    --panel: #ffffff;
+                    --ink: #0f172a;
+                    --muted: #64748b;
+                    --border: #e2e8f0;
+                    --shadow: 0 24px 60px rgba(15, 23, 42, 0.12);
+                    --success: #16a34a;
+                    --error: #dc2626;
+                }
+                * { box-sizing: border-box; }
+                body {
+                    margin: 0;
+                    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+                    background: var(--bg);
+                    color: var(--ink);
+                }
+                main {
+                    max-width: 980px;
+                    margin: 32px auto;
+                    padding: 0 20px 40px;
+                }
+                header {
+                    background: var(--panel);
+                    border: 1px solid var(--border);
+                    border-radius: 18px;
+                    padding: 22px 26px;
+                    box-shadow: var(--shadow);
+                }
+                h1 { margin: 0 0 8px; font-size: 1.6rem; }
+                .meta { color: var(--muted); font-size: 0.95rem; }
+                .grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                    gap: 16px;
+                    margin-top: 18px;
+                }
+                .card {
+                    background: var(--panel);
+                    border: 1px solid var(--border);
+                    border-radius: 16px;
+                    padding: 16px;
+                    box-shadow: var(--shadow);
+                }
+                .stat-label { color: var(--muted); font-size: 0.9rem; }
+                .stat-value { font-size: 1.6rem; font-weight: 600; }
+                section { margin-top: 24px; }
+                .section-title { font-size: 1.1rem; margin: 0 0 12px; }
+                .list-item {
+                    background: var(--panel);
+                    border: 1px solid var(--border);
+                    border-radius: 14px;
+                    padding: 12px 14px;
+                    margin-bottom: 10px;
+                    box-shadow: var(--shadow);
+                }
+                .list-title { font-weight: 600; }
+                .list-meta { color: var(--muted); font-size: 0.9rem; margin-top: 2px; }
+                .list-reason { color: var(--error); font-size: 0.9rem; margin-top: 6px; word-break: break-word; }
+                .muted { color: var(--muted); }
+            </style>
+        </head>
+        <body>
+            <main>
+                <header>
+                    <h1>${escapeHtml(titleText)}</h1>
+                    <div class="grid">
+                        <div class="card">
+                            <div class="stat-label">Total skipped apps</div>
+                            <div class="stat-value">${total}</div>
+                        </div>
+                        <div class="card">
+                            <div class="stat-label">Checked</div>
+                            <div class="stat-value" style="color: var(--success)">${successes.length}</div>
+                        </div>
+                        <div class="card">
+                            <div class="stat-label">Failed</div>
+                            <div class="stat-value" style="color: var(--error)">${failures.length}</div>
+                        </div>
+                        <div class="card">
+                            <div class="stat-label">Unknown extensions</div>
+                            <div class="stat-value" style="color: var(--error)">${unknowns.length}</div>
+                        </div>
+                    </div>
+                </header>
+                <section>
+                    <h2 class="section-title">Checked successfully</h2>
+                    ${successHtml}
+                </section>
+                <section>
+                    <h2 class="section-title">Failures</h2>
+                    ${failureHtml}
+                </section>
+                <section>
+                    <h2 class="section-title">Unknown file extensions</h2>
+                    ${unknownHtml}
+                </section>
+            </main>
+        </body>
+        </html>
+    `;
+
+    const blob = new Blob([docHtml], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const newTab = window.open(url, '_blank');
+    if (!newTab) {
+        setReportStatus('Popup blocked. Allow popups to open the summary tab.', 'error');
         URL.revokeObjectURL(url);
         return;
     }
