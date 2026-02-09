@@ -738,16 +738,6 @@ def find_configmap_matches(configmap: dict, regex):
         except Exception:
             return None
 
-    def extract_hostname(value: str):
-        if not isinstance(value, str) or not value:
-            return ""
-        try:
-            parsed = urllib.parse.urlparse(value)
-        except Exception:
-            return ""
-        hostname = parsed.hostname or ""
-        return hostname.strip()
-
     def extract_candidates(text: str):
         candidates = set()
         if not text:
@@ -766,6 +756,16 @@ def find_configmap_matches(configmap: dict, regex):
                 candidates.add(token)
         return list(candidates)
 
+    def extract_hostname(value: str):
+        if not isinstance(value, str) or not value:
+            return ""
+        try:
+            parsed = urllib.parse.urlparse(value)
+        except Exception:
+            return ""
+        hostname = parsed.hostname or ""
+        return hostname.strip()
+
     for key, value in data.items():
         value_text = stringify_property_value(value)
         if debug_enabled:
@@ -775,12 +775,13 @@ def find_configmap_matches(configmap: dict, regex):
                 key,
                 len(value_text) if isinstance(value_text, str) else 0,
             )
+
+        matched_any = False
         parsed_yaml = try_parse_yaml(value_text, key)
         parsed_json = None
         if parsed_yaml is not None:
             if debug_enabled:
                 logger.debug("Configmap %s key=%s parsed_as=yaml", name, key)
-            matched = False
             entries = walk_json(parsed_yaml)
             if debug_enabled:
                 logger.debug("Configmap %s key=%s yaml_entries=%s", name, key, len(entries))
@@ -818,15 +819,14 @@ def find_configmap_matches(configmap: dict, regex):
                     "matchOn": f"yaml-{kind}",
                     "path": path,
                 })
-                matched = True
-                break
-            if matched:
+                matched_any = True
+            if matched_any:
                 continue
+
         parsed_json = try_parse_json(value_text)
         if parsed_json is not None:
             if debug_enabled:
                 logger.debug("Configmap %s key=%s parsed_as=json", name, key)
-            matched = False
             entries = walk_json(parsed_json)
             if debug_enabled:
                 logger.debug("Configmap %s key=%s json_entries=%s", name, key, len(entries))
@@ -864,10 +864,10 @@ def find_configmap_matches(configmap: dict, regex):
                     "matchOn": f"json-{kind}",
                     "path": path,
                 })
-                matched = True
-                break
-            if matched:
+                matched_any = True
+            if matched_any:
                 continue
+
         if isinstance(key, str) and "." in key:
             ext = key.rsplit(".", 1)[-1].lower()
             if ext and ext not in ("json", "yaml", "yml") and parsed_yaml is None and parsed_json is None:
@@ -876,6 +876,7 @@ def find_configmap_matches(configmap: dict, regex):
                     "key": key,
                     "extension": ext,
                 })
+
         if regex.search(value_text) is not None:
             if debug_enabled:
                 logger.debug("Configmap %s key=%s value_match=full", name, key)
@@ -886,6 +887,7 @@ def find_configmap_matches(configmap: dict, regex):
                 "matchOn": "value",
             })
             continue
+
         for candidate in extract_candidates(value_text):
             matched_candidate = candidate
             if regex.search(candidate) is None:
@@ -915,7 +917,6 @@ def find_configmap_matches(configmap: dict, regex):
                 "value": matched_candidate,
                 "matchOn": "value-fragment",
             })
-            break
     return matches, unknown_files
 
 
