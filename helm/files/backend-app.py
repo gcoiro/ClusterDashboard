@@ -738,6 +738,157 @@ def find_configmap_matches(configmap: dict, regex):
         except Exception:
             return None
 
+    def try_parse_properties(text: str, key_name: str):
+        if not isinstance(text, str):
+            return None
+        if key_name and not key_name.lower().endswith(".properties"):
+            return None
+        stripped = text.strip()
+        if not stripped:
+            return None
+        if len(stripped) > 200000:
+            return None
+        parsed = {}
+        for line in stripped.splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith(("#", ";", "!")):
+                continue
+            if "=" in raw:
+                key, value = raw.split("=", 1)
+            elif ":" in raw:
+                key, value = raw.split(":", 1)
+            else:
+                continue
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key:
+                parsed[key] = value
+        return parsed if parsed else None
+
+    def try_parse_ini(text: str, key_name: str):
+        if not isinstance(text, str):
+            return None
+        if key_name and not key_name.lower().endswith(".ini"):
+            return None
+        stripped = text.strip()
+        if not stripped:
+            return None
+        if len(stripped) > 200000:
+            return None
+        parsed = {}
+        section = None
+        for line in stripped.splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith(("#", ";")):
+                continue
+            if raw.startswith("[") and raw.endswith("]") and len(raw) > 2:
+                section = raw[1:-1].strip()
+                if section and section not in parsed:
+                    parsed[section] = {}
+                continue
+            if "=" in raw:
+                key, value = raw.split("=", 1)
+            elif ":" in raw:
+                key, value = raw.split(":", 1)
+            else:
+                continue
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if not key:
+                continue
+            if section:
+                if section not in parsed:
+                    parsed[section] = {}
+                parsed[section][key] = value
+            else:
+                parsed[key] = value
+        return parsed if parsed else None
+
+    def try_parse_conf(text: str, key_name: str):
+        if not isinstance(text, str):
+            return None
+        if key_name and not key_name.lower().endswith(".conf"):
+            return None
+        stripped = text.strip()
+        if not stripped:
+            return None
+        if len(stripped) > 200000:
+            return None
+        parsed = {}
+        for line in stripped.splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith(("#", ";")):
+                continue
+            if "=" in raw:
+                key, value = raw.split("=", 1)
+            elif ":" in raw:
+                key, value = raw.split(":", 1)
+            else:
+                continue
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key:
+                parsed[key] = value
+        return parsed if parsed else None
+
+    def try_parse_js(text: str, key_name: str):
+        if not isinstance(text, str):
+            return None
+        if key_name and not key_name.lower().endswith(".js"):
+            return None
+        stripped = text.strip()
+        if not stripped:
+            return None
+        if len(stripped) > 200000:
+            return None
+        parsed = {}
+        for line in stripped.splitlines():
+            raw = line.strip()
+            if not raw or raw.startswith(("//", "/*", "*", "#")):
+                continue
+            if "=" in raw and raw.count("=") >= 1:
+                key, value = raw.split("=", 1)
+            elif ":" in raw:
+                key, value = raw.split(":", 1)
+            else:
+                continue
+            key = key.strip().strip(";")
+            value = value.strip().strip(";").strip('"').strip("'")
+            if key and value:
+                parsed[key] = value
+        return parsed if parsed else None
+
+    def try_parse_xml(text: str, key_name: str):
+        if not isinstance(text, str):
+            return None
+        if key_name and not key_name.lower().endswith(".xml"):
+            return None
+        stripped = text.strip()
+        if not stripped:
+            return None
+        if len(stripped) > 200000:
+            return None
+        try:
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(stripped)
+        except Exception:
+            return None
+
+        def element_to_dict(element):
+            node = {
+                "tag": element.tag,
+                "attributes": element.attrib or {},
+            }
+            text_value = (element.text or "").strip()
+            if text_value:
+                node["text"] = text_value
+            children = [element_to_dict(child) for child in list(element)]
+            if children:
+                node["children"] = children
+            return node
+
+        return element_to_dict(root)
+
     def extract_candidates(text: str):
         candidates = set()
         if not text:
@@ -766,6 +917,49 @@ def find_configmap_matches(configmap: dict, regex):
         hostname = parsed.hostname or ""
         return hostname.strip()
 
+    def process_entries(entries, kind_label, key_name):
+        matched_any = False
+        if debug_enabled:
+            logger.debug("Configmap %s key=%s %s_entries=%s", name, key_name, kind_label, len(entries))
+        for kind, token, path in entries:
+            if not token:
+                continue
+            matched_token = token
+            if regex.search(token) is None:
+                hostname = extract_hostname(token)
+                if not hostname or regex.search(hostname) is None:
+                    if debug_enabled:
+                        logger.debug(
+                            "Configmap %s key=%s %s_no_match path=%s token=%s hostname=%s",
+                            name,
+                            key_name,
+                            kind_label,
+                            path,
+                            token,
+                            hostname,
+                        )
+                    continue
+                matched_token = hostname
+            if debug_enabled:
+                logger.debug(
+                    "Configmap %s key=%s %s_match path=%s token=%s matched=%s",
+                    name,
+                    key_name,
+                    kind_label,
+                    path,
+                    token,
+                    matched_token,
+                )
+            matches.append({
+                "configMap": name,
+                "key": key_name,
+                "value": matched_token,
+                "matchOn": f"{kind_label}-{kind}",
+                "path": path,
+            })
+            matched_any = True
+        return matched_any
+
     for key, value in data.items():
         value_text = stringify_property_value(value)
         if debug_enabled:
@@ -782,44 +976,47 @@ def find_configmap_matches(configmap: dict, regex):
         if parsed_yaml is not None:
             if debug_enabled:
                 logger.debug("Configmap %s key=%s parsed_as=yaml", name, key)
-            entries = walk_json(parsed_yaml)
+            matched_any = process_entries(walk_json(parsed_yaml), "yaml", key)
+            if matched_any:
+                continue
+
+        parsed_xml = try_parse_xml(value_text, key)
+        if parsed_xml is not None:
             if debug_enabled:
-                logger.debug("Configmap %s key=%s yaml_entries=%s", name, key, len(entries))
-            for kind, token, path in entries:
-                if not token:
-                    continue
-                matched_token = token
-                if regex.search(token) is None:
-                    hostname = extract_hostname(token)
-                    if not hostname or regex.search(hostname) is None:
-                        if debug_enabled:
-                            logger.debug(
-                                "Configmap %s key=%s yaml_no_match path=%s token=%s hostname=%s",
-                                name,
-                                key,
-                                path,
-                                token,
-                                hostname,
-                            )
-                        continue
-                    matched_token = hostname
-                if debug_enabled:
-                    logger.debug(
-                        "Configmap %s key=%s yaml_match path=%s token=%s matched=%s",
-                        name,
-                        key,
-                        path,
-                        token,
-                        matched_token,
-                    )
-                matches.append({
-                    "configMap": name,
-                    "key": key,
-                    "value": matched_token,
-                    "matchOn": f"yaml-{kind}",
-                    "path": path,
-                })
-                matched_any = True
+                logger.debug("Configmap %s key=%s parsed_as=xml", name, key)
+            matched_any = process_entries(walk_json(parsed_xml), "xml", key)
+            if matched_any:
+                continue
+
+        parsed_properties = try_parse_properties(value_text, key)
+        if parsed_properties is not None:
+            if debug_enabled:
+                logger.debug("Configmap %s key=%s parsed_as=properties", name, key)
+            matched_any = process_entries(walk_json(parsed_properties), "properties", key)
+            if matched_any:
+                continue
+
+        parsed_ini = try_parse_ini(value_text, key)
+        if parsed_ini is not None:
+            if debug_enabled:
+                logger.debug("Configmap %s key=%s parsed_as=ini", name, key)
+            matched_any = process_entries(walk_json(parsed_ini), "ini", key)
+            if matched_any:
+                continue
+
+        parsed_conf = try_parse_conf(value_text, key)
+        if parsed_conf is not None:
+            if debug_enabled:
+                logger.debug("Configmap %s key=%s parsed_as=conf", name, key)
+            matched_any = process_entries(walk_json(parsed_conf), "conf", key)
+            if matched_any:
+                continue
+
+        parsed_js = try_parse_js(value_text, key)
+        if parsed_js is not None:
+            if debug_enabled:
+                logger.debug("Configmap %s key=%s parsed_as=js", name, key)
+            matched_any = process_entries(walk_json(parsed_js), "js", key)
             if matched_any:
                 continue
 
@@ -827,50 +1024,13 @@ def find_configmap_matches(configmap: dict, regex):
         if parsed_json is not None:
             if debug_enabled:
                 logger.debug("Configmap %s key=%s parsed_as=json", name, key)
-            entries = walk_json(parsed_json)
-            if debug_enabled:
-                logger.debug("Configmap %s key=%s json_entries=%s", name, key, len(entries))
-            for kind, token, path in entries:
-                if not token:
-                    continue
-                matched_token = token
-                if regex.search(token) is None:
-                    hostname = extract_hostname(token)
-                    if not hostname or regex.search(hostname) is None:
-                        if debug_enabled:
-                            logger.debug(
-                                "Configmap %s key=%s json_no_match path=%s token=%s hostname=%s",
-                                name,
-                                key,
-                                path,
-                                token,
-                                hostname,
-                            )
-                        continue
-                    matched_token = hostname
-                if debug_enabled:
-                    logger.debug(
-                        "Configmap %s key=%s json_match path=%s token=%s matched=%s",
-                        name,
-                        key,
-                        path,
-                        token,
-                        matched_token,
-                    )
-                matches.append({
-                    "configMap": name,
-                    "key": key,
-                    "value": matched_token,
-                    "matchOn": f"json-{kind}",
-                    "path": path,
-                })
-                matched_any = True
+            matched_any = process_entries(walk_json(parsed_json), "json", key)
             if matched_any:
                 continue
 
         if isinstance(key, str) and "." in key:
             ext = key.rsplit(".", 1)[-1].lower()
-            if ext and ext not in ("json", "yaml", "yml") and parsed_yaml is None and parsed_json is None:
+            if ext and ext not in ("json", "yaml", "yml", "xml", "conf", "js", "properties", "ini"):
                 unknown_files.append({
                     "configMap": name,
                     "key": key,
